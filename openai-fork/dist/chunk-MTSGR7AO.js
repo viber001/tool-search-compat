@@ -5918,7 +5918,7 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
       customProviderToolNames,
       outputSchemaToolNames
     });
-    const store = hasCodexToolSearch ? true : openaiOptions?.store;
+    const store = hasCodexToolSearch ? true : openaiOptions?.store ?? true;
     const { input, warnings: inputWarnings } = await convertToOpenAIResponsesInput({
       prompt,
       toolNameMapping,
@@ -5926,7 +5926,7 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
       providerOptionsName,
       fileIdPrefixes: this.config.fileIdPrefixes,
       passThroughUnsupportedFiles: openaiOptions?.passThroughUnsupportedFiles ?? false,
-      store: store ?? true,
+      store,
       hasConversation: openaiOptions?.conversation != null,
       hasPreviousResponseId: openaiOptions?.previousResponseId != null,
       avoidReasoningItemReferences: hasCodexToolSearch,

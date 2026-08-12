@@ -44,17 +44,22 @@ toolNameMapping?.toProviderToolName(tool.name) ?? tool.name
 
 上游这里直接使用 `tool.name`。这不是 `tool_search` 专属修改，会影响需要 provider/custom tool name mapping 的普通 function tool。
 
-### 3. 启用自动 `tool_search` 时强制 `store: true`
+### 3. 显式保持 Responses 的 `store: true` 默认值
 
-文件：`openai-fork/src/responses/openai-responses-language-model.ts:403-427`
+文件：`openai-fork/src/responses/openai-responses-language-model.ts:411-430`
 
 fork 使用：
 
 ```ts
-const store = hasCodexToolSearch ? true : openaiOptions?.store;
+const store = hasCodexToolSearch ? true : (openaiOptions?.store ?? true);
 ```
 
-原因是 Codex-compatible endpoint 的下一轮请求会复用上一轮 response item；服务端要求这些 item 持久化。该行为会改变请求的存储语义：即使调用方设置 `store: false`，自动兼容 `tool_search` 时也会发送 `store: true`。
+这同时保持官方 Responses API 的默认语义，并将默认值显式发送到请求体。部分兼容 endpoint
+会把省略 `store` 解释为 `false`，但输入转换已经按 `true` 使用历史 response item 的 ID，
+从而出现 `Items are not persisted when \`store\` is set to false`。显式解析后，未配置时请求体
+发送 `store: true`。由于 fork 会对每个 Responses 请求自动注入 `tool_search`，其兼容流程始终
+强制有效值为 `store: true`，即使调用方明确设置 `store: false`；这是因为下一轮请求会复用上一轮
+response item。上游 SDK 中的无状态 `store: false` 语义不适用于这个自动兼容流程。
 
 ### 4. `doGenerate` 增加多轮 client tool search 流程
 
@@ -115,10 +120,12 @@ return {
 
 ## 风险与后续验证边界
 
-曾观察到以下服务端错误，需要单独继续验证：
+此前曾观察到以下服务端错误；根因是 fork 的输入转换使用了默认 `true`，而请求体省略了
+`store`，兼容 endpoint 将其按 `false` 处理：
 
 ```text
-Item with id 'rs_084759ba2e20986a016a7bd2cf78a4819184bcd783e22ba985' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.
+Item with id 'msg_054a84e0449d8dd3016a7be7e72038819185e648e75597d939' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.
 ```
 
-该错误说明 Responses 的 reasoning/item 持久化链仍可能受 `previous_response_id`、batch model 或已有会话历史影响。当前文档只记录已知风险，不把普通请求通过等同于完整兼容性验证。
+修复后仍需分别验证 `previous_response_id`、batch model 和已有会话历史等场景；普通请求通过
+不等同于完整 Responses 兼容性验证。

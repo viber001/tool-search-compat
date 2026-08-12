@@ -155,6 +155,11 @@ The following provider options are available:
 
   Whether to store the generation. Defaults to `true`.
 
+  This local fork automatically adds the Codex client-side `tool_search` tool to every Responses request.
+  To keep the response items available for the follow-up request, the fork sends `store: true` explicitly
+  and the effective value remains `true` even when `store: false` is provided. The `store: false` examples
+  in the upstream documentation therefore do not disable persistence in this fork.
+
 - **passThroughUnsupportedFiles** _boolean_
 
   Whether to pass through non-image file types as generic input files. Defaults to `false`, which restricts inline file inputs to images and PDFs. Enable this when the target OpenAI Responses model supports additional file media types.

@@ -8,6 +8,13 @@ The fork exposes a native client-side `tool_search` definition to the Responses 
 requests it, the fork returns an empty tool catalog and continues the request internally. OpenCode
 therefore never receives an unknown tool call, while the Codex prompt remains compatible.
 
+Responses requests also preserve the OpenAI default `store: true` explicitly on the wire. This matters
+for compatible endpoints that interpret an omitted `store` field as `false`; without it, later requests
+may reference response items that the endpoint did not persist. Callers can still opt out with
+`providerOptions.openai.store: false` in the upstream provider, but this fork automatically enables the
+Codex `tool_search` compatibility flow on every Responses request. That flow forces the effective wire
+value to `store: true` because its follow-up request reuses the previous response items.
+
 ## OpenCode Configuration
 
 The provider definition is configured in `~/.config/opencode/opencode.jsonc`.

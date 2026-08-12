@@ -232,7 +232,7 @@ declare class OpenAIResponsesLanguageModel implements LanguageModelV4 {
             metadata: any;
             parallel_tool_calls: boolean | null | undefined;
             previous_response_id: string | null | undefined;
-            store: boolean | null | undefined;
+            store: boolean;
             user: string | null | undefined;
             instructions: string | null | undefined;
             service_tier: "default" | "auto" | "flex" | "priority" | "fast" | null | undefined;
@@ -269,7 +269,7 @@ declare class OpenAIResponsesLanguageModel implements LanguageModelV4 {
             max_output_tokens: number | undefined;
         };
         warnings: SharedV4Warning[];
-        store: boolean | null | undefined;
+        store: boolean;
         toolNameMapping: _ai_sdk_provider_utils.ToolNameMapping;
         providerOptionsName: string;
         isShellProviderExecuted: boolean;

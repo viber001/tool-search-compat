@@ -408,9 +408,11 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
       outputSchemaToolNames,
     });
 
-    // The Codex-compatible endpoint reuses the response item when the next
-    // request returns the client-side tool result. Keep that item persisted.
-    const store = hasCodexToolSearch ? true : openaiOptions?.store;
+    // Keep the Responses API default explicit because some compatible
+    // endpoints treat an omitted `store` value as false.
+    // The Codex-compatible endpoint also requires persisted items for its
+    // client-side tool_search follow-up requests.
+    const store = hasCodexToolSearch ? true : (openaiOptions?.store ?? true);
 
     const { input, warnings: inputWarnings } =
       await convertToOpenAIResponsesInput({
@@ -425,7 +427,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
         fileIdPrefixes: this.config.fileIdPrefixes,
         passThroughUnsupportedFiles:
           openaiOptions?.passThroughUnsupportedFiles ?? false,
-        store: store ?? true,
+        store,
         hasConversation: openaiOptions?.conversation != null,
         hasPreviousResponseId: openaiOptions?.previousResponseId != null,
         avoidReasoningItemReferences: hasCodexToolSearch,
