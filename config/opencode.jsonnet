@@ -117,7 +117,7 @@ local provider(displayName, baseURL, npm) = {
   disabled_providers: [],
 
   "instructions": [
-    "tool_search is no-op. Use listed tools only."
+    "No tool_search. Use listed tools only."
   ],
 
   lsp: {

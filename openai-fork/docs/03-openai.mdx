@@ -158,10 +158,13 @@ The following provider options are available:
   This local fork sends `store: true` explicitly when the option is omitted because some compatible
   endpoints interpret an omitted value as `false`. An explicit `store: false` remains `false`.
 
-  OpenCode registers a local no-op `tool_search` handler in
-  `~/.config/opencode/plugins/tool-search-noop.ts`; its execution returns `[]`. The fork does not add
-  that handler to the Responses request `tools` array. If a proxy nevertheless returns a client-side
-  `tool_search_call`, the fork consumes it internally and returns an empty `tools: []` catalog.
+  This is a fork-specific wire-format difference from the stock `@ai-sdk/openai` package: the stock
+  package may omit `store` when it is not configured. Both packages can still point to the same proxy;
+  changing the `npm` provider entry changes which SDK serializes the request.
+
+  The fork does not modify OpenCode's tool registry or add a plugin. If a proxy returns a client-side
+  `tool_search_call`, the provider consumes it internally, sends a matching `tool_search_output` with
+  an empty `tools: []` catalog, and continues the Responses request.
   Explicit `openai.tools.toolSearch()` provider tools remain supported.
 
 - **passThroughUnsupportedFiles** _boolean_

@@ -5853,9 +5853,7 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
         details: "conversation and previousResponseId cannot be used together"
       });
     }
-    const requestTools = (tools ?? []).filter(
-      (tool) => !(tool.type === "function" && tool.name === "tool_search")
-    );
+    const requestTools = tools ?? [];
     const toolNameMapping = createToolNameMapping({
       tools: requestTools,
       providerToolNames: {
@@ -6144,8 +6142,19 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
       const clientToolSearchCalls = response.output.filter(
         (part) => part.type === "tool_search_call" && part.execution === "client"
       );
-      if (clientToolSearchCalls.length === 0 || round === MAX_CODEX_TOOL_SEARCH_ROUNDS - 1) {
+      if (clientToolSearchCalls.length === 0) {
         break;
+      }
+      if (round === MAX_CODEX_TOOL_SEARCH_ROUNDS - 1) {
+        throw new APICallError2({
+          message: "Responses API returned too many client-side tool_search_call items",
+          url,
+          requestBodyValues: requestBody,
+          statusCode: 500,
+          responseHeaders,
+          responseBody: rawResponse,
+          isRetryable: false
+        });
       }
       requestBody = {
         ...requestBody,
@@ -6213,6 +6222,9 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
           break;
         }
         case "tool_search_call": {
+          if (part.execution === "client") {
+            break;
+          }
           const toolCallId = part.call_id ?? part.id;
           const isHosted = part.execution === "server";
           if (isHosted) {
@@ -6236,6 +6248,9 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
           break;
         }
         case "tool_search_output": {
+          if (part.execution === "client") {
+            break;
+          }
           const toolCallId = part.call_id ?? hostedToolSearchCallIds.shift() ?? part.id;
           content.push({
             type: "tool-result",
@@ -7179,6 +7194,10 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
               } else if (value.item.type === "tool_search_call") {
                 const toolCall = ongoingToolCalls[value.output_index];
                 const isHosted = value.item.execution === "server";
+                if (!isHosted) {
+                  ongoingToolCalls[value.output_index] = void 0;
+                  return;
+                }
                 if (toolCall != null) {
                   const toolCallId = isHosted ? toolCall.toolCallId : value.item.call_id ?? value.item.id;
                   if (isHosted) {
@@ -7212,6 +7231,9 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
                 }
                 ongoingToolCalls[value.output_index] = void 0;
               } else if (value.item.type === "tool_search_output") {
+                if (value.item.execution === "client") {
+                  return;
+                }
                 const toolCallId = value.item.call_id ?? hostedToolSearchCallIds.shift() ?? value.item.id;
                 controller.enqueue({
                   type: "tool-result",
