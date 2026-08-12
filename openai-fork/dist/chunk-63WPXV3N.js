@@ -5692,6 +5692,23 @@ function clientToolSearchOutput(call) {
     tools: []
   };
 }
+function prepareCodexToolSearchFollowUpInput(output) {
+  return output.flatMap((part) => {
+    if (part.type !== "reasoning") {
+      return [part];
+    }
+    if (part.encrypted_content == null) {
+      return [];
+    }
+    return [
+      {
+        type: "reasoning",
+        encrypted_content: part.encrypted_content,
+        summary: part.summary
+      }
+    ];
+  });
+}
 function extractApprovalRequestIdToToolCallIdMapping(prompt) {
   const mapping = {};
   for (const message of prompt) {
@@ -5933,7 +5950,7 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
     if (hasOpenAITool("openai.code_interpreter")) {
       addInclude("code_interpreter_call.outputs");
     }
-    if (store === false && isReasoningModel) {
+    if (isReasoningModel) {
       addInclude("reasoning.encrypted_content");
     }
     const baseArgs = {
@@ -6160,7 +6177,7 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
         ...requestBody,
         input: [
           ...Array.isArray(requestBody.input) ? requestBody.input : [],
-          ...response.output,
+          ...prepareCodexToolSearchFollowUpInput(response.output),
           ...clientToolSearchCalls.map(
             (call) => clientToolSearchOutput(call)
           )

@@ -23,8 +23,10 @@ Responses requests also preserve the OpenAI default `store: true` explicitly on 
 for compatible endpoints that interpret an omitted `store` field as `false`; without it, later requests
 may reference response items that the endpoint did not persist. Callers can still opt out with
 `providerOptions.openai.store: false`; the fork preserves that explicit value. The hidden no-op
-compatibility flow appends the previous response output to its internal follow-up request and does not
-require declaring `tool_search` in the initial request.
+compatibility flow appends replayable parts of the previous response to its internal follow-up request
+and does not require declaring `tool_search` in the initial request. Reasoning models always request
+encrypted content, and reasoning parts are replayed without their server-side `rs_*` IDs, so compatible
+endpoints do not receive stale reasoning references even when the proxy emits the client-side call later.
 
 The stock SDK and this fork therefore do not produce identical request bodies when `store` is omitted:
 the stock SDK may omit the field, while the fork sends `store: true`. If `headroom-photonmark` works

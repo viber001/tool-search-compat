@@ -99,6 +99,33 @@ function clientToolSearchOutput(
   };
 }
 
+function prepareCodexToolSearchFollowUpInput(
+  output: NonNullable<
+    InferSchema<typeof openaiResponsesResponseSchema>['output']
+  >,
+): OpenAIResponsesInput {
+  return output.flatMap(part => {
+    if (part.type !== 'reasoning') {
+      return [part as unknown as OpenAIResponsesInput[number]];
+    }
+
+    // Reasoning IDs are server-side item identifiers. Replaying the raw
+    // output can make compatible endpoints interpret `rs_*` as a reference.
+    // Replay encrypted reasoning content instead, without the server ID.
+    if (part.encrypted_content == null) {
+      return [];
+    }
+
+    return [
+      {
+        type: 'reasoning' as const,
+        encrypted_content: part.encrypted_content,
+        summary: part.summary,
+      },
+    ];
+  });
+}
+
 import type {
   ResponsesCompactionProviderMetadata,
   ResponsesProviderMetadata,
@@ -454,8 +481,10 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
       addInclude('code_interpreter_call.outputs');
     }
 
-    // store defaults to true in the OpenAI responses API, so check for false exactly:
-    if (store === false && isReasoningModel) {
+    // The proxy may emit a hidden client-side tool_search_call even when the
+    // caller did not declare openai.tool_search. Always request encrypted
+    // reasoning so that follow-ups can avoid replaying server-side IDs.
+    if (isReasoningModel) {
       addInclude('reasoning.encrypted_content');
     }
 
@@ -750,7 +779,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
         ...requestBody,
         input: [
           ...(Array.isArray(requestBody.input) ? requestBody.input : []),
-          ...(response.output as unknown as OpenAIResponsesInput),
+          ...prepareCodexToolSearchFollowUpInput(response.output),
           ...clientToolSearchCalls.map(call =>
             clientToolSearchOutput(call),
           ),

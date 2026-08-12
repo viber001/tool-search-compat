@@ -44,7 +44,7 @@ http://127.0.0.1:8787/v1
 
 ### 1. 在 provider 内部消费 `tool_search_call`
 
-文件：`openai-fork/src/responses/openai-responses-language-model.ts:83-100,328-374,681-759`
+文件：`openai-fork/src/responses/openai-responses-language-model.ts:83-126,355-419,705-783`
 
 - OpenCode 不注册 `tool_search`，也不新增 plugin；`tool_search_call` 只作为 OpenAI Responses API 协议项由 fork 处理。
 - fork 不会自动追加 `openai.tool_search` provider tool，因此初始请求不会声明 `tool_search`。
@@ -52,6 +52,10 @@ http://127.0.0.1:8787/v1
 - 最多自动完成 3 轮 Responses 请求。
 - 普通 `function_call`、文本和 reasoning 仍按现有 AI SDK 流程返回给 OpenCode。
 - 调用方显式提供 `openai.tools.toolSearch()` 时仍按上游方式发送 provider tool。
+- 隐藏 follow-up 不再原样回放上一轮的 reasoning output。fork 对 reasoning model 始终请求
+  `reasoning.encrypted_content`，并重建不带服务端 `id` 的 reasoning input，避免将 `rs_*`
+  标识作为 item reference 送给兼容 endpoint。这样即使初始请求没有声明
+  `openai.tool_search`，也能处理代理后置注入的 client-side 调用。
 
 这部分是 fork 的主要兼容目标。
 
@@ -88,16 +92,18 @@ Item with id 'msg_054a84e0449d8dd3016a7be7e72038819185e648e75597d939' not found.
 当前 fork 在未配置时请求体发送 `store: true`，调用方明确设置 `store: false` 时则发送 `false`。
 这只能保证 fork 到 `127.0.0.1:8787` 这一段的请求体；如果代理或上游之后重写或按 `false` 解释，
 fork 本身无法在更下游覆盖该行为。类似的 `rs_... not found` 错误不能单独证明 fork 没有发送
-`true`，应直接捕获代理入口的 JSON。provider 内部的 `tool_search_call` 降级流程将上一轮
-`response.output` 直接追加到 follow-up request，不要求初始请求声明该工具。
+`true`，应直接捕获代理入口的 JSON。provider 内部的 `tool_search_call` 降级流程仍会继续
+follow-up request，但会先移除 reasoning output 的服务端 `id`，改用加密内容回放，不要求初始
+请求声明该工具。
 
 ### 4. `doGenerate` 增加多轮隐藏 client tool search 流程
 
-文件：`openai-fork/src/responses/openai-responses-language-model.ts:725-759`
+文件：`openai-fork/src/responses/openai-responses-language-model.ts:749-783`
 
 上游单次请求后直接解析结果；fork 会在代理返回 client-side `tool_search_call` 时：
 
-1. 将上一轮 `response.output` 追加到下一轮 input。
+1. 将上一轮可回放的 `response.output` 追加到下一轮 input；reasoning 只发送
+   `encrypted_content` 和 summary，不发送 `rs_*` 服务端 ID。
 2. 追加 `tool_search_output`，其中 `tools` 固定为空数组，不加载额外工具。
 3. 最多重复 3 轮。
 
@@ -152,9 +158,10 @@ return {
 
 ## 风险与后续验证边界
 
-此前曾观察到以下服务端错误。其典型机制是输入转换按默认 `true` 使用历史 item ID，而兼容
-endpoint 将实际请求按 `store=false` 处理；旧版本 fork 的确还存在“请求体省略 `store`”问题，
-现已修复为显式发送默认值：
+此前曾观察到以下服务端错误。其典型机制是隐藏 `tool_search` 的第二轮 follow-up 原样带回
+reasoning output 的 `rs_*` 服务端 ID，兼容 endpoint 将它解析为不存在的 item reference；另一个
+独立风险是输入转换按默认 `true` 使用历史 item ID，而兼容 endpoint 将实际请求按 `store=false`
+处理。fork 现已同时修复 reasoning 回放和“请求体省略 `store`”问题：
 
 ```text
 Item with id 'msg_054a84e0449d8dd3016a7be7e72038819185e648e75597d939' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.
@@ -163,6 +170,8 @@ Item with id 'msg_054a84e0449d8dd3016a7be7e72038819185e648e75597d939' not found.
 如果后续仍出现相同类型的 `rs_...` 错误，应同时检查：
 
 - fork 发往 `127.0.0.1:8787` 的请求体是否为 `store: true`；
+- 第二轮请求的 reasoning input 是否只有 `encrypted_content`，且没有 `id` 或
+  `item_reference`；
 - OpenCode 是否通过 `providerOptions.openai.store` 明确传入了 `false`；
 - 代理或上游是否在 fork 发出请求后重写了 `store`。
 
