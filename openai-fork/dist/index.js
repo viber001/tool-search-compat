@@ -24,7 +24,7 @@ import {
   toolSearch,
   webSearch,
   webSearchPreview
-} from "./chunk-V2HIZ3P7.js";
+} from "./chunk-ZRVADZOI.js";
 
 // src/openai-provider.ts
 import {

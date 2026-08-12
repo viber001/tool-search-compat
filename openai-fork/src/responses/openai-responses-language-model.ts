@@ -428,6 +428,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
         store: store ?? true,
         hasConversation: openaiOptions?.conversation != null,
         hasPreviousResponseId: openaiOptions?.previousResponseId != null,
+        avoidReasoningItemReferences: hasCodexToolSearch,
         hasLocalShellTool: hasOpenAITool('openai.local_shell'),
         hasShellTool: hasOpenAITool('openai.shell'),
         hasApplyPatchTool: hasOpenAITool('openai.apply_patch'),

@@ -93,6 +93,7 @@ export async function convertToOpenAIResponsesInput({
   store,
   hasConversation = false,
   hasPreviousResponseId = false,
+  avoidReasoningItemReferences = false,
   hasLocalShellTool = false,
   hasShellTool = false,
   hasApplyPatchTool = false,
@@ -110,6 +111,7 @@ export async function convertToOpenAIResponsesInput({
   store: boolean;
   hasConversation?: boolean; // when true, skip assistant messages that already have item IDs
   hasPreviousResponseId?: boolean; // when true, skip reasoning and function-call items that already exist in the previous response chain
+  avoidReasoningItemReferences?: boolean;
   hasLocalShellTool?: boolean;
   hasShellTool?: boolean;
   hasApplyPatchTool?: boolean;
@@ -762,7 +764,7 @@ export async function convertToOpenAIResponsesInput({
               if (reasoningId != null) {
                 const reasoningMessage = reasoningMessages[reasoningId];
 
-                if (store) {
+                if (store && !avoidReasoningItemReferences) {
                   // use item references to refer to reasoning (single reference)
                   // when the first part is encountered
                   if (reasoningMessage === undefined) {
@@ -1276,9 +1278,9 @@ export async function convertToOpenAIResponsesInput({
     }
   }
 
-  // when store is false, remove reasoning parts without encrypted content
+  // When item references are disabled, standalone reasoning needs encrypted content.
   if (
-    !store &&
+    (!store || avoidReasoningItemReferences) &&
     input.some(
       item =>
         'type' in item &&
@@ -1289,7 +1291,7 @@ export async function convertToOpenAIResponsesInput({
     warnings.push({
       type: 'other',
       message:
-        'Reasoning parts without encrypted content are not supported when store is false. Skipping reasoning parts.',
+        'Reasoning parts without encrypted content are not supported when item references are disabled. Skipping reasoning parts.',
     });
     input = input.filter(
       item =>

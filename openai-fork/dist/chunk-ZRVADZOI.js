@@ -3031,6 +3031,7 @@ async function convertToOpenAIResponsesInput({
   store,
   hasConversation = false,
   hasPreviousResponseId = false,
+  avoidReasoningItemReferences = false,
   hasLocalShellTool = false,
   hasShellTool = false,
   hasApplyPatchTool = false,
@@ -3499,7 +3500,7 @@ async function convertToOpenAIResponsesInput({
               }
               if (reasoningId != null) {
                 const reasoningMessage = reasoningMessages[reasoningId];
-                if (store) {
+                if (store && !avoidReasoningItemReferences) {
                   if (reasoningMessage === void 0) {
                     input.push({ type: "item_reference", id: reasoningId });
                     reasoningMessages[reasoningId] = {
@@ -3908,12 +3909,12 @@ async function convertToOpenAIResponsesInput({
       }
     }
   }
-  if (!store && input.some(
+  if ((!store || avoidReasoningItemReferences) && input.some(
     (item) => "type" in item && item.type === "reasoning" && item.encrypted_content == null
   )) {
     warnings.push({
       type: "other",
-      message: "Reasoning parts without encrypted content are not supported when store is false. Skipping reasoning parts."
+      message: "Reasoning parts without encrypted content are not supported when item references are disabled. Skipping reasoning parts."
     });
     input = input.filter(
       (item) => !("type" in item) || item.type !== "reasoning" || item.encrypted_content != null
@@ -5928,6 +5929,7 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
       store: store ?? true,
       hasConversation: openaiOptions?.conversation != null,
       hasPreviousResponseId: openaiOptions?.previousResponseId != null,
+      avoidReasoningItemReferences: hasCodexToolSearch,
       hasLocalShellTool: hasOpenAITool("openai.local_shell"),
       hasShellTool: hasOpenAITool("openai.shell"),
       hasApplyPatchTool: hasOpenAITool("openai.apply_patch"),
