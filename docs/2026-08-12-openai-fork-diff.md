@@ -109,6 +109,51 @@ follow-up request，但会先移除 reasoning output 的服务端 `id`，改用�
 
 初始请求不需要声明 `tool_search`。这会改变特定响应的请求次数、延迟、token 消耗和最终 request body，属于有意的兼容行为差异。
 
+### 4.1 与旧版 OpenCode no-op 路径的上下文和 prompt cache 差异
+
+历史上的 OpenCode no-op 兼容路径（提交 `8318289` 的 `index.ts`）会把
+`tool_search_call` 暴露给 OpenCode。OpenCode 将这个 assistant tool-call 和返回的
+`tool_search_output(tools: [])` 写入自己的上下文，下一次调用再通过 prompt 转换把它们发回
+Responses API。
+
+当前 fork 的隐藏 follow-up 并不是从 `tool_search_call` 开始截断。它的第二个请求大致仍然是：
+
+```text
+初始 input
++ 第一轮 response.output（包含 tool_search_call）
++ tool_search_output(tools: [])
+```
+
+`prepareCodexToolSearchFollowUpInput()` 会保留所有非 reasoning output，因此第一轮的
+`tool_search_call` 仍然进入隐藏 follow-up。只有 reasoning 会改为不带服务端 `id` 的
+`encrypted_content` 形式，以避免将 `rs_*` 解释成不可用的 item reference。
+
+真正的上下文差异发生在隐藏 follow-up 完成以后：
+
+- 旧路径把 client-side `tool_search_call` 和 `tool_search_output` 返回给 OpenCode，后续
+  OpenCode 会话历史继续包含它们。
+- 当前 fork 在解析最终结果时跳过 client-side `tool_search_call` 和
+  `tool_search_output`，所以 OpenCode 后续会话历史不包含这两个中间协议项。
+
+因此，若比较两条路径在后续用户轮次发出的请求，序列会在这些中间项处发生分叉。Prompt
+cache 通常按序列化后的 token 前缀匹配；分叉后的后缀不能继续复用旧路径的同一缓存前缀。这里
+不能严格表述为“从 `tool_search_call` 的第一个字符开始全部不能命中”：缓存通常按 token 和
+缓存块工作，具体边界由 endpoint 决定。
+
+这也不能直接推出 fork 一定更贵：
+
+- 旧路径会发送并保存 `tool_search_call`、`tool_search_output` 等额外上下文；fork 后续请求
+  省略这些项，可能减少总输入 token。
+- 如果旧路径的较长后缀原本能命中缓存，而 fork 切换到不同前缀，则 fork 可能损失这部分
+  cached input 的折扣。
+- 连续只使用 fork 时，它可以为自己的稳定前缀重新建立缓存，不是永久性缓存损失。
+
+所以准确结论是：**fork 的隐藏第二请求仍包含 `tool_search_call`；缓存差异主要发生在后续
+OpenCode 会话历史是否保留中间协议项，而不是发生在隐藏 follow-up 从该项开始缺内容。是否
+亏钱取决于省下的历史 token、失去的 cached input token，以及 endpoint 的缓存规则。应通过
+每次响应的 `usage.input_tokens_details.cached_tokens`、`usage.input_tokens` 和
+`usage.output_tokens` 对同一模型、同一 prompt cache key 的两条路径做实测比较。**
+
 ### 5. `doStream` 改为先完整生成，再返回 buffered stream
 
 文件：`openai-fork/src/responses/openai-responses-language-model.ts:1384-1399`
