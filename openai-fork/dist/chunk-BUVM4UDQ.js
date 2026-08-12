@@ -3031,6 +3031,7 @@ async function convertToOpenAIResponsesInput({
   store,
   hasConversation = false,
   hasPreviousResponseId = false,
+  avoidAssistantMessageItemReferences = false,
   avoidReasoningItemReferences = false,
   hasLocalShellTool = false,
   hasShellTool = false,
@@ -3208,7 +3209,7 @@ async function convertToOpenAIResponsesInput({
               if (hasConversation && id != null) {
                 break;
               }
-              if (store && id != null) {
+              if (store && id != null && !avoidAssistantMessageItemReferences) {
                 input.push({ type: "item_reference", id });
                 break;
               }
@@ -5681,6 +5682,40 @@ function mapShellSkills(skills) {
 
 // src/responses/openai-responses-language-model.ts
 var MAX_CODEX_TOOL_SEARCH_ROUNDS = 3;
+var codexToolSearchRequestSequence = 0;
+function logCodexToolSearchRequest({
+  request,
+  round,
+  requestBody
+}) {
+  if (process.env.OPENAI_TOOL_SEARCH_COMPAT_DEBUG !== "1") {
+    return;
+  }
+  const input = Array.isArray(requestBody.input) ? requestBody.input : [];
+  const inputItems = input.map((item, index) => {
+    if (item == null || typeof item !== "object") {
+      return { index, type: typeof item };
+    }
+    const record = item;
+    return {
+      index,
+      type: record.type ?? record.role ?? "unknown",
+      ...typeof record.id === "string" ? { id: record.id } : {},
+      ...typeof record.call_id === "string" ? { callId: record.call_id } : {},
+      ...record.type === "reasoning" ? { hasEncryptedContent: typeof record.encrypted_content === "string" } : {}
+    };
+  });
+  console.error(
+    "OPENAI TOOL SEARCH COMPAT REQUEST",
+    JSON.stringify({
+      request,
+      round,
+      store: requestBody.store,
+      previousResponseId: requestBody.previous_response_id,
+      inputItems
+    })
+  );
+}
 function clientToolSearchOutput(call) {
   return {
     type: "tool_search_output",
@@ -5888,9 +5923,6 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
         "openai.programmatic_tool_calling": "programmatic_tool_calling"
       }
     });
-    const hasCodexToolSearch = requestTools.some(
-      (tool) => tool.type === "provider" && tool.id === "openai.tool_search"
-    );
     const customProviderToolNames = /* @__PURE__ */ new Set();
     const outputSchemaToolNames = /* @__PURE__ */ new Set();
     const {
@@ -5916,7 +5948,10 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
       store,
       hasConversation: openaiOptions?.conversation != null,
       hasPreviousResponseId: openaiOptions?.previousResponseId != null,
-      avoidReasoningItemReferences: hasCodexToolSearch,
+      // The compatibility endpoint does not reliably persist response items
+      // across OpenCode turns, even when the request uses store: true.
+      avoidAssistantMessageItemReferences: true,
+      avoidReasoningItemReferences: true,
       hasLocalShellTool: hasOpenAITool("openai.local_shell"),
       hasShellTool: hasOpenAITool("openai.shell"),
       hasApplyPatchTool: hasOpenAITool("openai.apply_patch"),
@@ -6118,7 +6153,13 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
     let responseHeaders;
     let response;
     let rawResponse;
+    const request = ++codexToolSearchRequestSequence;
     for (let round = 0; round < MAX_CODEX_TOOL_SEARCH_ROUNDS; round++) {
+      logCodexToolSearchRequest({
+        request,
+        round,
+        requestBody
+      });
       const result = await postJsonToApi5({
         url,
         headers: combineHeaders5(this.config.headers?.(), options.headers),

@@ -33,12 +33,13 @@ http://127.0.0.1:8787/v1
 
 ## 源码改动范围
 
-与上游 `src/` 相比，只有两个源码文件不同：
+与上游 `src/` 相比，当前有三个源码文件不同：
 
+- `openai-fork/src/responses/convert-to-openai-responses-input.ts`
 - `openai-fork/src/responses/openai-responses-language-model.ts`
 - `openai-fork/src/responses/openai-responses-prepare-tools.ts`
 
-其余 Responses 文件、其他工具实现、配置和 provider API 文件均与 `@ai-sdk/openai@4.0.37` 的源码一致。`src/tool/tool-search.ts` 本身没有相对上游的改动，上游版本已经包含 `tool_search` 的类型和 schema；fork 改的是兼容执行流程。
+其余 Responses 文件、其他工具实现、配置和 provider API 文件均与 `@ai-sdk/openai@4.0.37` 的源码一致。`src/tool/tool-search.ts` 本身没有相对上游的改动，上游版本已经包含 `tool_search` 的类型和 schema；fork 改的是兼容执行流程和跨轮 input 序列化。
 
 ## 具体修改
 
@@ -95,6 +96,33 @@ fork 本身无法在更下游覆盖该行为。类似的 `rs_... not found` 错�
 `true`，应直接捕获代理入口的 JSON。provider 内部的 `tool_search_call` 降级流程仍会继续
 follow-up request，但会先移除 reasoning output 的服务端 `id`，改用加密内容回放，不要求初始
 请求声明该工具。
+
+### 3.1 跨 OpenCode 轮次不复用 assistant message 和 reasoning item reference
+
+文件：
+
+- `openai-fork/src/responses/convert-to-openai-responses-input.ts`
+- `openai-fork/src/responses/openai-responses-language-model.ts`
+
+2026-08-12 使用以下新 CLI 会话提示词稳定复现了跨轮失败：
+
+```text
+确认~/.config/opencode/tool-search-compat/openai-fork的功能，更新md
+```
+
+诊断显示失败发生在新的 provider 调用 `round: 0`，不是隐藏 tool-search follow-up。请求体已经
+明确包含 `store: true`，但历史 input 同时包含 `rs_*` 和 `msg_*` 的 `item_reference`，兼容
+endpoint 仍返回 404。这证明仅显式发送 `store: true` 不能保证该 endpoint 可以跨 OpenCode
+轮次复用已存 item。
+
+fork 因此对正常 OpenCode prompt 转换启用两个独立兼容开关：
+
+- assistant text 不再序列化为 `msg_* item_reference`，而是内联重建 assistant message；
+- reasoning 不再序列化为 `rs_* item_reference`，而是使用
+  `reasoning.encrypted_content` 和 summary 重建。
+
+`store` 仍保持原有 wire 语义：未配置时发送 `true`，显式 `false` 仍发送 `false`。兼容修复只
+避免依赖跨轮 item persistence，不把整次 Responses 请求强制改为 `store: false`。
 
 ### 4. `doGenerate` 增加多轮隐藏 client tool search 流程
 
@@ -173,9 +201,9 @@ return {
 
 ## 未修改和已验证一致的部分
 
-- 除上述两个文件外，fork 的 `src/` 与上游 `@ai-sdk/openai@4.0.37` 一致。
+- 除上述三个文件外，fork 的 `src/` 与上游 `@ai-sdk/openai@4.0.37` 一致。
 - `src/tool/tool-search.ts` 与上游一致；fork 没有修改 tool search 的类型定义或 schema。
-- 其他 provider tool 的准备逻辑、Responses input 转换、错误处理、usage 转换、finish reason 映射等源码没有被 fork 直接修改。
+- 其他 provider tool 的准备逻辑、错误处理、usage 转换、finish reason 映射等源码没有被 fork 直接修改。Responses input 转换仅增加上述 assistant-message 和 reasoning item-reference 兼容开关。
 - `openai-responses-batch.ts` 没有 fork 专属源码改动；它复用修改后的 Responses model `getArgs()`，因此仍会继承 `store` 和工具名映射变化，也不会自动声明 `tool_search`。
 
 已执行验证：
@@ -184,6 +212,7 @@ return {
 - `npx tsup src/index.ts src/internal/index.ts --format esm --dts ...`：构建通过。
 - 普通 CLI 请求：通过并返回 `OK`。
 - 代理触发隐藏 `tool_search_call` 的 CLI 请求：通过并返回 `OK`。
+- 包含 reasoning、skill 调用、多个文件工具调用和 Markdown 编辑的跨轮 CLI 请求：通过并返回最终答案；诊断中没有 `item_reference`，历史 reasoning 均包含 `encrypted_content`。
 - 桌面端会话已由用户确认测试通过。
 - stock `@ai-sdk/openai` 与 fork 使用同一代理地址时，fork 的未配置 `store` 请求体显式包含
   `store: true`；stock SDK 的 wire JSON 可能省略该字段。
@@ -192,10 +221,11 @@ return {
 
 **不能确认“除 `tool_search` 外其他行为完全一致”。**
 
-可以确认的是：fork 的源码改动范围很小，且非上述两个 Responses 文件的源码与 `@ai-sdk/openai@4.0.37` 一致。但 fork 同时改变了：
+可以确认的是：fork 的源码改动范围很小，且非上述三个 Responses 文件的源码与 `@ai-sdk/openai@4.0.37` 一致。但 fork 同时改变了：
 
 - 普通 function tool 的 provider name mapping；
 - 自动 `tool_search` 场景下的 `store` 语义；
+- 正常 OpenCode 轮次的 assistant message 和 reasoning history 序列化；
 - Responses 请求的轮数、request body、延迟和 token 消耗；
 - 所有 Responses `doStream` 的实现方式和流式时序。
 
@@ -204,19 +234,22 @@ return {
 ## 风险与后续验证边界
 
 此前曾观察到以下服务端错误。其典型机制是隐藏 `tool_search` 的第二轮 follow-up 原样带回
-reasoning output 的 `rs_*` 服务端 ID，兼容 endpoint 将它解析为不存在的 item reference；另一个
-独立风险是输入转换按默认 `true` 使用历史 item ID，而兼容 endpoint 将实际请求按 `store=false`
-处理。fork 现已同时修复 reasoning 回放和“请求体省略 `store`”问题：
+reasoning output 的 `rs_*` 服务端 ID，兼容 endpoint 将它解析为不存在的 item reference。后续
+实测又确认，即使 fork 明确发送 `store: true`，该 endpoint 仍不能可靠复用正常 OpenCode
+历史中的 `msg_*` 和 `rs_*` item。fork 现已同时修复 hidden reasoning 回放、请求体省略 `store`
+以及正常跨轮 assistant/reasoning item-reference 序列化问题：
 
 ```text
 Item with id 'msg_054a84e0449d8dd3016a7be7e72038819185e648e75597d939' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.
 ```
 
-如果后续仍出现相同类型的 `rs_...` 错误，应同时检查：
+如果后续仍出现相同类型的 item 错误，应同时检查：
 
 - fork 发往 `127.0.0.1:8787` 的请求体是否为 `store: true`；
 - 第二轮请求的 reasoning input 是否只有 `encrypted_content`，且没有 `id` 或
   `item_reference`；
+- 正常后续 provider 调用是否把历史 assistant text 和 reasoning 内联，而不是发送 `msg_*` 或
+  `rs_* item_reference`；
 - OpenCode 是否通过 `providerOptions.openai.store` 明确传入了 `false`；
 - 代理或上游是否在 fork 发出请求后重写了 `store`。
 

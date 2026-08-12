@@ -93,6 +93,7 @@ export async function convertToOpenAIResponsesInput({
   store,
   hasConversation = false,
   hasPreviousResponseId = false,
+  avoidAssistantMessageItemReferences = false,
   avoidReasoningItemReferences = false,
   hasLocalShellTool = false,
   hasShellTool = false,
@@ -111,6 +112,7 @@ export async function convertToOpenAIResponsesInput({
   store: boolean;
   hasConversation?: boolean; // when true, skip assistant messages that already have item IDs
   hasPreviousResponseId?: boolean; // when true, skip reasoning and function-call items that already exist in the previous response chain
+  avoidAssistantMessageItemReferences?: boolean;
   avoidReasoningItemReferences?: boolean;
   hasLocalShellTool?: boolean;
   hasShellTool?: boolean;
@@ -335,7 +337,11 @@ export async function convertToOpenAIResponsesInput({
               }
 
               // item references reduce the payload size
-              if (store && id != null) {
+              if (
+                store &&
+                id != null &&
+                !avoidAssistantMessageItemReferences
+              ) {
                 input.push({ type: 'item_reference', id });
                 break;
               }

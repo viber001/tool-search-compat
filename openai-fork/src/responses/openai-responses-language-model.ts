@@ -81,6 +81,52 @@ import {
 import { prepareResponsesTools } from './openai-responses-prepare-tools';
 
 const MAX_CODEX_TOOL_SEARCH_ROUNDS = 3;
+let codexToolSearchRequestSequence = 0;
+
+function logCodexToolSearchRequest({
+  request,
+  round,
+  requestBody,
+}: {
+  request: number;
+  round: number;
+  requestBody: Record<string, unknown>;
+}) {
+  if (process.env.OPENAI_TOOL_SEARCH_COMPAT_DEBUG !== '1') {
+    return;
+  }
+
+  const input = Array.isArray(requestBody.input) ? requestBody.input : [];
+  const inputItems = input.map((item, index) => {
+    if (item == null || typeof item !== 'object') {
+      return { index, type: typeof item };
+    }
+
+    const record = item as Record<string, unknown>;
+    return {
+      index,
+      type: record.type ?? record.role ?? 'unknown',
+      ...(typeof record.id === 'string' ? { id: record.id } : {}),
+      ...(typeof record.call_id === 'string'
+        ? { callId: record.call_id }
+        : {}),
+      ...(record.type === 'reasoning'
+        ? { hasEncryptedContent: typeof record.encrypted_content === 'string' }
+        : {}),
+    };
+  });
+
+  console.error(
+    'OPENAI TOOL SEARCH COMPAT REQUEST',
+    JSON.stringify({
+      request,
+      round,
+      store: requestBody.store,
+      previousResponseId: requestBody.previous_response_id,
+      inputItems,
+    }),
+  );
+}
 
 function clientToolSearchOutput(
   call: Extract<
@@ -374,10 +420,6 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
       },
     });
 
-    const hasCodexToolSearch = requestTools.some(
-      tool => tool.type === 'provider' && tool.id === 'openai.tool_search',
-    );
-
     const customProviderToolNames = new Set<string>();
     // OpenAI requires function_call_output.output to contain valid JSON when the
     // function declares output_schema. Preserve the affected SDK tool names so
@@ -416,7 +458,10 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
         store,
         hasConversation: openaiOptions?.conversation != null,
         hasPreviousResponseId: openaiOptions?.previousResponseId != null,
-        avoidReasoningItemReferences: hasCodexToolSearch,
+        // The compatibility endpoint does not reliably persist response items
+        // across OpenCode turns, even when the request uses store: true.
+        avoidAssistantMessageItemReferences: true,
+        avoidReasoningItemReferences: true,
         hasLocalShellTool: hasOpenAITool('openai.local_shell'),
         hasShellTool: hasOpenAITool('openai.shell'),
         hasApplyPatchTool: hasOpenAITool('openai.apply_patch'),
@@ -706,8 +751,14 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
     let responseHeaders: Record<string, string> | undefined;
     let response!: InferSchema<typeof openaiResponsesResponseSchema>;
     let rawResponse: unknown;
+    const request = ++codexToolSearchRequestSequence;
 
     for (let round = 0; round < MAX_CODEX_TOOL_SEARCH_ROUNDS; round++) {
+      logCodexToolSearchRequest({
+        request,
+        round,
+        requestBody,
+      });
       const result = await postJsonToApi({
         url,
         headers: combineHeaders(this.config.headers?.(), options.headers),
