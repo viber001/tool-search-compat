@@ -80,48 +80,7 @@ import {
 } from './openai-responses-language-model-options';
 import { prepareResponsesTools } from './openai-responses-prepare-tools';
 
-const CODEX_TOOL_SEARCH_DESCRIPTION =
-  'Find the project-specific tools needed to continue the task.';
-
-const CODEX_TOOL_SEARCH_PARAMETERS = {
-  type: 'object',
-  properties: {
-    query: { type: 'string' },
-  },
-  required: ['query'],
-  additionalProperties: false,
-} satisfies Record<string, unknown>;
-
-const CODEX_TOOL_SEARCH: LanguageModelV4ProviderTool = {
-  type: 'provider',
-  id: 'openai.tool_search',
-  name: 'tool_search',
-  args: {
-    execution: 'client',
-    description: CODEX_TOOL_SEARCH_DESCRIPTION,
-    parameters: CODEX_TOOL_SEARCH_PARAMETERS,
-  },
-};
-
 const MAX_CODEX_TOOL_SEARCH_ROUNDS = 3;
-
-function addCodexToolSearch(
-  tools: LanguageModelV4CallOptions['tools'],
-): NonNullable<LanguageModelV4CallOptions['tools']> {
-  const filtered = (tools ?? []).filter(
-    tool => !(tool.type === 'function' && tool.name === 'tool_search'),
-  );
-
-  if (
-    filtered.some(
-      tool => tool.type === 'provider' && tool.id === 'openai.tool_search',
-    )
-  ) {
-    return filtered;
-  }
-
-  return [...filtered, CODEX_TOOL_SEARCH];
-}
 
 function clientToolSearchOutput(
   call: Extract<
@@ -366,7 +325,12 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
       });
     }
 
-    const requestTools = addCodexToolSearch(tools);
+    // OpenCode may register tool_search as a local no-op handler. Do not expose
+    // that compatibility tool to the API; the response-side handler below can
+    // still consume a proxy-emitted native tool_search_call.
+    const requestTools = (tools ?? []).filter(
+      tool => !(tool.type === 'function' && tool.name === 'tool_search'),
+    );
 
     const toolNameMapping = createToolNameMapping({
       tools: requestTools,
@@ -410,9 +374,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
 
     // Keep the Responses API default explicit because some compatible
     // endpoints treat an omitted `store` value as false.
-    // The Codex-compatible endpoint also requires persisted items for its
-    // client-side tool_search follow-up requests.
-    const store = hasCodexToolSearch ? true : (openaiOptions?.store ?? true);
+    const store = openaiOptions?.store ?? true;
 
     const { input, warnings: inputWarnings } =
       await convertToOpenAIResponsesInput({

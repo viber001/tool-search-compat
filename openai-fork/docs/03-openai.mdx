@@ -155,10 +155,14 @@ The following provider options are available:
 
   Whether to store the generation. Defaults to `true`.
 
-  This local fork automatically adds the Codex client-side `tool_search` tool to every Responses request.
-  To keep the response items available for the follow-up request, the fork sends `store: true` explicitly
-  and the effective value remains `true` even when `store: false` is provided. The `store: false` examples
-  in the upstream documentation therefore do not disable persistence in this fork.
+  This local fork sends `store: true` explicitly when the option is omitted because some compatible
+  endpoints interpret an omitted value as `false`. An explicit `store: false` remains `false`.
+
+  OpenCode registers a local no-op `tool_search` handler in
+  `~/.config/opencode/plugins/tool-search-noop.ts`; its execution returns `[]`. The fork does not add
+  that handler to the Responses request `tools` array. If a proxy nevertheless returns a client-side
+  `tool_search_call`, the fork consumes it internally and returns an empty `tools: []` catalog.
+  Explicit `openai.tools.toolSearch()` provider tools remain supported.
 
 - **passThroughUnsupportedFiles** _boolean_
 

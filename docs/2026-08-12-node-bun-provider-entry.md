@@ -48,7 +48,7 @@ Did you mean to import "/Users/galaxy/.config/opencode/tool-search-compat/openai
 
 - Node 动态导入 `dist/index.js` 成功。
 - OpenCode 命令行普通请求返回 `OK`。
-- 强制调用 `tool_search` 的命令行测试返回 `OK`。
+- 代理触发隐藏 `tool_search_call` 的命令行测试返回 `OK`。
 - OpenCode 桌面版会话已验证通过：`oc://renderer/server/c2lkZWNhcg/session/ses_00c5bb3beffe7nRIiWtneAAdNS`
 
 配置文件不会热加载。修改 provider 入口后需要完全退出并重新启动 OpenCode 桌面版；仅切换 provider 或新建会话不足以重新加载模块。

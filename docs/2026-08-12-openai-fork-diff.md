@@ -19,16 +19,16 @@
 
 ## 具体修改
 
-### 1. 自动注入 Codex client-side `tool_search`
+### 1. 隐藏 `tool_search` no-op 兼容层
 
 文件：`openai-fork/src/responses/openai-responses-language-model.ts:84-155`
 
-- 定义 provider tool `openai.tool_search`，名称为 `tool_search`，执行方式为 `client`。
-- 请求参数为 `{ query: string }`。
-- 当请求没有 `openai.tool_search` 时自动追加该 provider tool。
-- 当输入中存在普通 function `tool_search` 时将其过滤，避免和 OpenAI 保留的 `tool_search` namespace 冲突。
-- 对 Responses API 返回的 client-side `tool_search_call` 构造 `tool_search_output`，但固定返回 `tools: []`。OpenCode 生成的工具描述已经在初始 Responses 请求的 `tools` 数组中发送给模型，不再重复作为动态加载结果返回。
+- OpenCode 通过 `~/.config/opencode/plugins/tool-search-noop.ts` 注册本地 no-op `tool_search` handler，执行结果固定为 `[]`。
+- fork 不会把这个普通 function `tool_search` 放进发给 API 的 `tools` 数组。
+- 不再自动追加 `openai.tool_search` provider tool，因此模型不会从请求 schema 得到 `tool_search` 能力声明。
+- 仍解析 Responses API 返回的 client-side `tool_search_call`。如果代理注入的 prefix 使模型返回该调用，fork 构造 `tool_search_output`，固定返回 `tools: []`，并在 provider 内继续请求，不把未知调用交给 OpenCode。
 - 最多自动完成 3 轮 Responses 请求。
+- 调用方显式提供 `openai.tools.toolSearch()` 时仍按上游方式发送 provider tool。
 
 这部分是 fork 的主要兼容目标。
 
@@ -51,27 +51,26 @@ toolNameMapping?.toProviderToolName(tool.name) ?? tool.name
 fork 使用：
 
 ```ts
-const store = hasCodexToolSearch ? true : (openaiOptions?.store ?? true);
+const store = openaiOptions?.store ?? true;
 ```
 
 这同时保持官方 Responses API 的默认语义，并将默认值显式发送到请求体。部分兼容 endpoint
 会把省略 `store` 解释为 `false`，但输入转换已经按 `true` 使用历史 response item 的 ID，
 从而出现 `Items are not persisted when \`store\` is set to false`。显式解析后，未配置时请求体
-发送 `store: true`。由于 fork 会对每个 Responses 请求自动注入 `tool_search`，其兼容流程始终
-强制有效值为 `store: true`，即使调用方明确设置 `store: false`；这是因为下一轮请求会复用上一轮
-response item。上游 SDK 中的无状态 `store: false` 语义不适用于这个自动兼容流程。
+发送 `store: true`，调用方明确设置 `store: false` 时则发送 `false`。隐藏 `tool_search` no-op
+流程将上一轮 `response.output` 直接追加到内部 follow-up request，不要求初始请求声明该工具。
 
-### 4. `doGenerate` 增加多轮 client tool search 流程
+### 4. `doGenerate` 增加多轮隐藏 client tool search 流程
 
 文件：`openai-fork/src/responses/openai-responses-language-model.ts:709-800`
 
-上游单次请求后直接解析结果；fork 会在返回 client-side `tool_search_call` 时：
+上游单次请求后直接解析结果；fork 会在代理返回 client-side `tool_search_call` 时：
 
 1. 将上一轮 `response.output` 追加到下一轮 input。
 2. 追加 `tool_search_output`，其中 `tools` 固定为空数组，不加载额外工具。
 3. 最多重复 3 轮。
 
-这会改变请求次数、延迟、token 消耗和最终 request body，属于有意的兼容行为差异。
+初始请求不需要声明 `tool_search`。这会改变特定响应的请求次数、延迟、token 消耗和最终 request body，属于有意的兼容行为差异。
 
 ### 5. `doStream` 改为先完整生成，再返回 buffered stream
 
@@ -95,14 +94,14 @@ return {
 - 除上述两个文件外，fork 的 `src/` 与上游 `@ai-sdk/openai@4.0.37` 一致。
 - `src/tool/tool-search.ts` 与上游一致；fork 没有修改 tool search 的类型定义或 schema。
 - 其他 provider tool 的准备逻辑、Responses input 转换、错误处理、usage 转换、finish reason 映射等源码没有被 fork 直接修改。
-- `openai-responses-batch.ts` 没有 fork 专属源码改动；它复用修改后的 Responses model `getArgs()`，因此启用自动 `tool_search` 时仍会继承 `store` 和工具名映射变化。
+- `openai-responses-batch.ts` 没有 fork 专属源码改动；它复用修改后的 Responses model `getArgs()`，因此仍会继承 `store` 和工具名映射变化，但不会自动声明 `tool_search`。
 
 已执行验证：
 
 - `npx tsc --noEmit -p openai-fork/tsconfig.build.json`：通过。
 - `npx tsup src/index.ts src/internal/index.ts --format esm --dts ...`：构建通过。
 - 普通 CLI 请求：通过并返回 `OK`。
-- 强制 `tool_search` CLI 请求：通过并返回 `OK`。
+- 代理触发隐藏 `tool_search_call` 的 CLI 请求：通过并返回 `OK`。
 - 桌面端会话已由用户确认测试通过。
 
 ## 结论
@@ -116,7 +115,7 @@ return {
 - Responses 请求的轮数、request body、延迟和 token 消耗；
 - 所有 Responses `doStream` 的实现方式和流式时序。
 
-因此当前准确表述应是：**fork 保留官方 SDK 的主体实现，并增加 Codex `tool_search` 兼容层；模型仍可读取初始请求中的 OpenCode 工具描述，但不能宣称 Responses 的所有非兼容层行为完全等价。**
+因此当前准确表述应是：**fork 保留官方 SDK 的主体实现，并增加隐藏的 Codex `tool_search` no-op 兼容层；默认请求不声明 `tool_search`，但仍可消费代理返回的 client-side 调用。不能宣称 Responses 的所有非兼容层行为完全等价。**
 
 ## 风险与后续验证边界
 

@@ -5680,37 +5680,7 @@ function mapShellSkills(skills) {
 }
 
 // src/responses/openai-responses-language-model.ts
-var CODEX_TOOL_SEARCH_DESCRIPTION = "Find the project-specific tools needed to continue the task.";
-var CODEX_TOOL_SEARCH_PARAMETERS = {
-  type: "object",
-  properties: {
-    query: { type: "string" }
-  },
-  required: ["query"],
-  additionalProperties: false
-};
-var CODEX_TOOL_SEARCH = {
-  type: "provider",
-  id: "openai.tool_search",
-  name: "tool_search",
-  args: {
-    execution: "client",
-    description: CODEX_TOOL_SEARCH_DESCRIPTION,
-    parameters: CODEX_TOOL_SEARCH_PARAMETERS
-  }
-};
 var MAX_CODEX_TOOL_SEARCH_ROUNDS = 3;
-function addCodexToolSearch(tools) {
-  const filtered = (tools ?? []).filter(
-    (tool) => !(tool.type === "function" && tool.name === "tool_search")
-  );
-  if (filtered.some(
-    (tool) => tool.type === "provider" && tool.id === "openai.tool_search"
-  )) {
-    return filtered;
-  }
-  return [...filtered, CODEX_TOOL_SEARCH];
-}
 function clientToolSearchOutput(call) {
   return {
     type: "tool_search_output",
@@ -5883,7 +5853,9 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
         details: "conversation and previousResponseId cannot be used together"
       });
     }
-    const requestTools = addCodexToolSearch(tools);
+    const requestTools = (tools ?? []).filter(
+      (tool) => !(tool.type === "function" && tool.name === "tool_search")
+    );
     const toolNameMapping = createToolNameMapping({
       tools: requestTools,
       providerToolNames: {
@@ -5918,7 +5890,7 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
       customProviderToolNames,
       outputSchemaToolNames
     });
-    const store = hasCodexToolSearch ? true : openaiOptions?.store ?? true;
+    const store = openaiOptions?.store ?? true;
     const { input, warnings: inputWarnings } = await convertToOpenAIResponsesInput({
       prompt,
       toolNameMapping,
