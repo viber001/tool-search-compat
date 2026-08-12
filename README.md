@@ -21,7 +21,7 @@ Keep existing providers on `@ai-sdk/openai` and add a separate provider using th
   "provider": {
     "headroom-openai-fork": {
       "name": "headroom-openai-fork",
-      "npm": "file:///absolute/path/to/tool-search-compat/openai-fork",
+      "npm": "file:///absolute/path/to/tool-search-compat/openai-fork/dist/index.js",
       "options": { "baseURL": "http://127.0.0.1:8787/v1" }
     }
   }

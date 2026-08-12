@@ -1,6 +1,5 @@
 import {
   APICallError,
-  type JSONObject,
   type JSONValue,
   type LanguageModelV4,
   type LanguageModelV4Prompt,
@@ -129,29 +128,16 @@ function clientToolSearchOutput(
     OpenAIResponsesInput[number],
     { type: 'tool_search_call' }
   >,
-  tools: Array<JSONObject>,
 ): Extract<OpenAIResponsesInput[number], { type: 'tool_search_output' }> {
   return {
     type: 'tool_search_output',
     execution: 'client',
     call_id: call.call_id ?? call.id,
     status: 'completed',
-    tools,
+    // OpenCode's tool descriptions are already present in the initial request.
+    // Do not duplicate them as dynamically loaded tools.
+    tools: [],
   };
-}
-
-function getCodexToolSearchTools(body: { tools?: unknown }): Array<JSONObject> {
-  if (!Array.isArray(body.tools)) {
-    return [];
-  }
-
-  return body.tools.filter(tool => {
-    if (typeof tool !== 'object' || tool == null) {
-      return false;
-    }
-
-    return (tool as { type?: unknown }).type !== 'tool_search';
-  }) as Array<JSONObject>;
 }
 
 import type {
@@ -786,14 +772,13 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
         break;
       }
 
-      const toolSearchTools = getCodexToolSearchTools(requestBody);
       requestBody = {
         ...requestBody,
         input: [
           ...(Array.isArray(requestBody.input) ? requestBody.input : []),
           ...(response.output as unknown as OpenAIResponsesInput),
           ...clientToolSearchCalls.map(call =>
-            clientToolSearchOutput(call, toolSearchTools),
+            clientToolSearchOutput(call),
           ),
         ],
       };

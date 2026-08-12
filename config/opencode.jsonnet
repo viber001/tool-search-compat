@@ -100,9 +100,9 @@ local models = {
     ),
 };
 
-local provider(displayName, baseURL) = {
+local provider(displayName, baseURL, npm) = {
   name: displayName,
-  npm: "@ai-sdk/openai",
+  npm: npm,
 
   options: {
     baseURL: baseURL,
@@ -146,12 +146,21 @@ local provider(displayName, baseURL) = {
       provider(
         "photonmark-codex-pay",
         "https://codex.photonmark.com/openai/v1",
+        "@ai-sdk/openai",
       ),
 
     headroom:
       provider(
         "headroom-photonmark",
         "http://127.0.0.1:8787/v1",
+        "@ai-sdk/openai",
+      ),
+
+    "headroom-openai-fork":
+      provider(
+        "headroom-openai-fork",
+        "http://127.0.0.1:8787/v1",
+        "file:///Users/galaxy/.config/opencode/tool-search-compat/openai-fork/dist/index.js",
       ),
   },
 

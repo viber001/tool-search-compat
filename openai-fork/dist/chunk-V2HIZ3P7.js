@@ -5710,25 +5710,16 @@ function addCodexToolSearch(tools) {
   }
   return [...filtered, CODEX_TOOL_SEARCH];
 }
-function clientToolSearchOutput(call, tools) {
+function clientToolSearchOutput(call) {
   return {
     type: "tool_search_output",
     execution: "client",
     call_id: call.call_id ?? call.id,
     status: "completed",
-    tools
+    // OpenCode's tool descriptions are already present in the initial request.
+    // Do not duplicate them as dynamically loaded tools.
+    tools: []
   };
-}
-function getCodexToolSearchTools(body) {
-  if (!Array.isArray(body.tools)) {
-    return [];
-  }
-  return body.tools.filter((tool) => {
-    if (typeof tool !== "object" || tool == null) {
-      return false;
-    }
-    return tool.type !== "tool_search";
-  });
 }
 function extractApprovalRequestIdToToolCallIdMapping(prompt) {
   const mapping = {};
@@ -6182,14 +6173,13 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
       if (clientToolSearchCalls.length === 0 || round === MAX_CODEX_TOOL_SEARCH_ROUNDS - 1) {
         break;
       }
-      const toolSearchTools = getCodexToolSearchTools(requestBody);
       requestBody = {
         ...requestBody,
         input: [
           ...Array.isArray(requestBody.input) ? requestBody.input : [],
           ...response.output,
           ...clientToolSearchCalls.map(
-            (call) => clientToolSearchOutput(call, toolSearchTools)
+            (call) => clientToolSearchOutput(call)
           )
         ]
       };
