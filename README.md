@@ -1,26 +1,37 @@
 # OpenCode `tool_search` Compatibility
 
-This plugin provides a small compatibility shim for providers that inject the Codex `tool_search` contract.
+This repository contains a local fork of `@ai-sdk/openai@4.0.37` for providers that inject the Codex
+`tool_search` prompt. The compatibility logic is implemented in the provider fork, not as a global
+OpenCode plugin, so providers using the stock SDK are unaffected.
 
-The plugin keeps an internal OpenCode tool named `tool_search`, then rewrites that one tool in
-OpenAI Responses requests to the native client-side `tool_search` type.
-OpenCode already exposes permitted tools directly, so the shim returns `{ "tools": [] }` and does not
-search or dynamically load tools.
+The fork exposes a native client-side `tool_search` definition to the Responses API. When the model
+requests it, the fork returns an empty tool catalog and continues the request internally. OpenCode
+therefore never receives an unknown tool call, while the Codex prompt remains compatible.
 
-The request rewrite is implemented through OpenCode's plugin `config` hook by wrapping the in-memory
-provider fetch function. It does not modify provider configuration files or any external proxy.
+## OpenCode Configuration
 
-The plugin also appends `No tool_search. Use listed tools only.` through
-OpenCode's `experimental.chat.system.transform` hook on every request.
-
-## Installation
-
-Add the plugin's absolute `index.ts` path to the global OpenCode `plugin` list.
+Keep existing providers on `@ai-sdk/openai` and add a separate provider using the local fork:
 
 ```json
 {
-  "plugin": [
-    "file:///absolute/path/to/tool-search-compat/index.ts"
-  ]
+  "provider": {
+    "headroom-openai-fork": {
+      "name": "headroom-openai-fork",
+      "npm": "file:///absolute/path/to/tool-search-compat/openai-fork",
+      "options": { "baseURL": "http://127.0.0.1:8787/v1" }
+    }
+  }
 }
+```
+
+Do not add the removed `index.ts` as a global plugin. OpenCode stores API credentials by provider ID,
+so the new provider may need its own API key/auth entry even when it uses the same endpoint.
+
+## Build
+
+```bash
+npm install --ignore-scripts
+npx tsup src/index.ts src/internal/index.ts --format esm --dts --out-dir dist \
+  --tsconfig tsconfig.build.json \
+  --external @ai-sdk/provider --external @ai-sdk/provider-utils --external zod
 ```
