@@ -115,7 +115,7 @@ follow-up request，但会先移除 reasoning output 的服务端 `id`，改用�
 endpoint 仍返回 404。这证明仅显式发送 `store: true` 不能保证该 endpoint 可以跨 OpenCode
 轮次复用已存 item。
 
-fork 因此对正常 OpenCode prompt 转换启用两个独立兼容开关：
+fork 因此对正常 OpenCode prompt 转换启用独立兼容开关：
 
 - assistant text 不再序列化为 `msg_* item_reference`，而是内联重建 assistant message；
 - reasoning 不再序列化为 `rs_* item_reference`，而是使用
@@ -123,6 +123,18 @@ fork 因此对正常 OpenCode prompt 转换启用两个独立兼容开关：
 
 `store` 仍保持原有 wire 语义：未配置时发送 `true`，显式 `false` 仍发送 `false`。兼容修复只
 避免依赖跨轮 item persistence，不把整次 Responses 请求强制改为 `store: false`。
+
+2026-08-13 又在同一长会话中复现了 `tsc_* not found`。数据库中的原始 part 是
+`tool: "invalid"`、`providerExecuted: true`，其 `callID` 和 provider `itemId` 都是同一个
+`tsc_*`。这表示代理返回的 client-side tool-search item 被 OpenCode 作为未知 provider tool
+保存；下一轮无法从该 part 安全重建原始 `tool_search_call`，但旧转换逻辑仍把它发送为
+`item_reference`。
+
+当前 fork 也禁用 tool-search item reference：有完整 input/output 的 tool-search 历史会重建为
+call/output；只有 `tsc_*` ID、无法还原协议内容的 provider-executed unknown item 会从后续 prompt
+中省略。使用 `opencode run --continue --session ses_00afe9333ffexa3222RLqSswNK --fork ...`
+保留原始历史复测后成功返回 `OK`，出错的 `tsc_04e363937e149efc016a7d1824ed388191b4ee2f359c1cb301`
+未再出现在 request input。
 
 ### 4. `doGenerate` 增加多轮隐藏 client tool search 流程
 
@@ -225,7 +237,7 @@ return {
 
 - 普通 function tool 的 provider name mapping；
 - 自动 `tool_search` 场景下的 `store` 语义；
-- 正常 OpenCode 轮次的 assistant message 和 reasoning history 序列化；
+- 正常 OpenCode 轮次的 assistant message、reasoning 和 tool-search history 序列化；
 - Responses 请求的轮数、request body、延迟和 token 消耗；
 - 所有 Responses `doStream` 的实现方式和流式时序。
 
@@ -237,7 +249,7 @@ return {
 reasoning output 的 `rs_*` 服务端 ID，兼容 endpoint 将它解析为不存在的 item reference。后续
 实测又确认，即使 fork 明确发送 `store: true`，该 endpoint 仍不能可靠复用正常 OpenCode
 历史中的 `msg_*` 和 `rs_*` item。fork 现已同时修复 hidden reasoning 回放、请求体省略 `store`
-以及正常跨轮 assistant/reasoning item-reference 序列化问题：
+以及正常跨轮 assistant/reasoning/tool-search item-reference 序列化问题：
 
 ```text
 Item with id 'msg_054a84e0449d8dd3016a7be7e72038819185e648e75597d939' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.
@@ -250,6 +262,7 @@ Item with id 'msg_054a84e0449d8dd3016a7be7e72038819185e648e75597d939' not found.
   `item_reference`；
 - 正常后续 provider 调用是否把历史 assistant text 和 reasoning 内联，而不是发送 `msg_*` 或
   `rs_* item_reference`；
+- OpenCode 保存的未知 provider-executed tool-search item 是否仍被发送为 `tsc_* item_reference`；
 - OpenCode 是否通过 `providerOptions.openai.store` 明确传入了 `false`；
 - 代理或上游是否在 fork 发出请求后重写了 `store`。
 

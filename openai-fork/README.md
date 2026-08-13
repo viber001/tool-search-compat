@@ -68,10 +68,13 @@ follow-up, reasoning output is reconstructed from encrypted content and summary
 without replaying server-side `rs_*` item IDs. This avoids compatible endpoints
 interpreting those IDs as stale item references.
 
-Normal OpenCode turns also avoid assistant-message and reasoning item-reference
-serialization. The configured compatibility endpoint does not reliably retain
-those response items across turns, even when the request uses `store: true`, so
-the fork sends replayable content instead of relying on `msg_*` or `rs_*` IDs.
+Normal OpenCode turns also avoid assistant-message, reasoning, and tool-search
+item-reference serialization. The configured compatibility endpoint does not
+reliably retain those response items across turns, even when the request uses
+`store: true`, so the fork sends replayable content instead of relying on
+`msg_*`, `rs_*`, or `tsc_*` IDs. A provider-executed `tsc_*` item that OpenCode
+records as an unknown tool cannot be reconstructed safely and is omitted from
+later prompts.
 
 ### Explicit `store: true`
 
@@ -145,8 +148,8 @@ The log includes the compatibility request number, round, `store`,
 `previous_response_id`, and input item types/IDs. It intentionally does not log
 full prompts or tool arguments.
 
-If an endpoint reports that a `msg_*` or `rs_*` item was not found, verify the
-request body at the proxy boundary and check:
+If an endpoint reports that a `msg_*`, `rs_*`, or `tsc_*` item was not found,
+verify the request body at the proxy boundary and check:
 
 - whether `store` is `true` or was explicitly configured as `false`;
 - whether the proxy rewrites or ignores `store`;

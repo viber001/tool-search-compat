@@ -95,6 +95,7 @@ export async function convertToOpenAIResponsesInput({
   hasPreviousResponseId = false,
   avoidAssistantMessageItemReferences = false,
   avoidReasoningItemReferences = false,
+  avoidToolSearchItemReferences = false,
   hasLocalShellTool = false,
   hasShellTool = false,
   hasApplyPatchTool = false,
@@ -114,6 +115,7 @@ export async function convertToOpenAIResponsesInput({
   hasPreviousResponseId?: boolean; // when true, skip reasoning and function-call items that already exist in the previous response chain
   avoidAssistantMessageItemReferences?: boolean;
   avoidReasoningItemReferences?: boolean;
+  avoidToolSearchItemReferences?: boolean;
   hasLocalShellTool?: boolean;
   hasShellTool?: boolean;
   hasApplyPatchTool?: boolean;
@@ -393,7 +395,7 @@ export async function convertToOpenAIResponsesInput({
               );
 
               if (resolvedToolName === 'tool_search') {
-                if (store && id != null) {
+                if (store && id != null && !avoidToolSearchItemReferences) {
                   input.push({ type: 'item_reference', id });
                   break;
                 }
@@ -445,7 +447,13 @@ export async function convertToOpenAIResponsesInput({
               }
 
               if (part.providerExecuted) {
-                if (store && id != null) {
+                if (
+                  store &&
+                  id != null &&
+                  !(
+                    avoidToolSearchItemReferences && id.startsWith('tsc_')
+                  )
+                ) {
                   input.push({ type: 'item_reference', id });
                 }
                 break;
@@ -649,7 +657,7 @@ export async function convertToOpenAIResponsesInput({
                   ).providerMetadata?.[providerOptionsName]?.itemId ??
                   part.toolCallId) as string;
 
-                if (store) {
+                if (store && !avoidToolSearchItemReferences) {
                   input.push({ type: 'item_reference', id: itemId });
                 } else if (part.output.type === 'json') {
                   const parsedOutput = await validateTypes({
@@ -740,6 +748,12 @@ export async function convertToOpenAIResponsesInput({
                       | { itemId?: string }
                       | undefined
                   )?.itemId ?? part.toolCallId;
+                if (
+                  avoidToolSearchItemReferences &&
+                  itemId.startsWith('tsc_')
+                ) {
+                  break;
+                }
                 input.push({ type: 'item_reference', id: itemId });
               } else {
                 warnings.push({

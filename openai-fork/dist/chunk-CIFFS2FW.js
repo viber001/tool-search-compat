@@ -3033,6 +3033,7 @@ async function convertToOpenAIResponsesInput({
   hasPreviousResponseId = false,
   avoidAssistantMessageItemReferences = false,
   avoidReasoningItemReferences = false,
+  avoidToolSearchItemReferences = false,
   hasLocalShellTool = false,
   hasShellTool = false,
   hasApplyPatchTool = false,
@@ -3232,7 +3233,7 @@ async function convertToOpenAIResponsesInput({
                 part.toolName
               );
               if (resolvedToolName === "tool_search") {
-                if (store && id != null) {
+                if (store && id != null && !avoidToolSearchItemReferences) {
                   input.push({ type: "item_reference", id });
                   break;
                 }
@@ -3273,7 +3274,7 @@ async function convertToOpenAIResponsesInput({
                 break;
               }
               if (part.providerExecuted) {
-                if (store && id != null) {
+                if (store && id != null && !(avoidToolSearchItemReferences && id.startsWith("tsc_"))) {
                   input.push({ type: "item_reference", id });
                 }
                 break;
@@ -3420,7 +3421,7 @@ async function convertToOpenAIResponsesInput({
               );
               if (resolvedResultToolName === "tool_search") {
                 const itemId = part.providerOptions?.[providerOptionsName]?.itemId ?? part.providerMetadata?.[providerOptionsName]?.itemId ?? part.toolCallId;
-                if (store) {
+                if (store && !avoidToolSearchItemReferences) {
                   input.push({ type: "item_reference", id: itemId });
                 } else if (part.output.type === "json") {
                   const parsedOutput = await validateTypes({
@@ -3480,6 +3481,9 @@ async function convertToOpenAIResponsesInput({
               }
               if (store) {
                 const itemId = part.providerOptions?.[providerOptionsName]?.itemId ?? part.toolCallId;
+                if (avoidToolSearchItemReferences && itemId.startsWith("tsc_")) {
+                  break;
+                }
                 input.push({ type: "item_reference", id: itemId });
               } else {
                 warnings.push({
@@ -5952,6 +5956,7 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
       // across OpenCode turns, even when the request uses store: true.
       avoidAssistantMessageItemReferences: true,
       avoidReasoningItemReferences: true,
+      avoidToolSearchItemReferences: true,
       hasLocalShellTool: hasOpenAITool("openai.local_shell"),
       hasShellTool: hasOpenAITool("openai.shell"),
       hasApplyPatchTool: hasOpenAITool("openai.apply_patch"),
