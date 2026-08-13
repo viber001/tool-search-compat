@@ -128,7 +128,7 @@ function logCodexToolSearchRequest({
   );
 }
 
-function clientToolSearchOutput(
+function toolSearchOutput(
   call: Extract<
     OpenAIResponsesInput[number],
     { type: 'tool_search_call' }
@@ -136,7 +136,7 @@ function clientToolSearchOutput(
 ): Extract<OpenAIResponsesInput[number], { type: 'tool_search_output' }> {
   return {
     type: 'tool_search_output',
-    execution: 'client',
+    execution: call.execution,
     call_id: call.call_id ?? call.id,
     status: 'completed',
     // OpenCode's tool descriptions are already present in the initial request.
@@ -803,13 +803,21 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
         });
       }
 
-      const clientToolSearchCalls = response.output.filter(
+      const toolSearchOutputCallIds = new Set(
+        response.output.flatMap(part =>
+          part.type === 'tool_search_output' && part.call_id != null
+            ? [part.call_id]
+            : [],
+        ),
+      );
+      const pendingToolSearchCalls = response.output.filter(
         (part): part is OpenAIResponsesToolSearchCall =>
-          part.type === 'tool_search_call' && part.execution === 'client',
+          part.type === 'tool_search_call' &&
+          !toolSearchOutputCallIds.has(part.call_id ?? part.id),
       );
 
       if (
-        clientToolSearchCalls.length === 0
+        pendingToolSearchCalls.length === 0
       ) {
         break;
       }
@@ -832,8 +840,8 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
         input: [
           ...(Array.isArray(requestBody.input) ? requestBody.input : []),
           ...prepareCodexToolSearchFollowUpInput(response.output),
-          ...clientToolSearchCalls.map(call =>
-            clientToolSearchOutput(call),
+          ...pendingToolSearchCalls.map(call =>
+            toolSearchOutput(call),
           ),
         ],
       };

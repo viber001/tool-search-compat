@@ -162,11 +162,13 @@ The following provider options are available:
   package may omit `store` when it is not configured. Both packages can still point to the same proxy;
   changing the `npm` provider entry changes which SDK serializes the request.
 
-  The fork does not modify OpenCode's tool registry or add a plugin. If a proxy returns a client-side
-  `tool_search_call`, the provider consumes it internally, sends a matching `tool_search_output` with
-  an empty `tools: []` catalog, and continues the Responses request for up to three total rounds.
-  Client-side tool-search protocol items are omitted from the final result returned to OpenCode.
-  Explicit `openai.tools.toolSearch()` provider tools remain supported.
+  The fork does not modify OpenCode's tool registry or add a plugin. If a proxy returns a
+  `tool_search_call` without a matching `tool_search_output` in the same response, the provider
+  consumes it internally, sends an empty `tools: []` result, and continues the Responses request for
+  up to three total rounds. This includes compatible endpoints that label an unresolved call as
+  `execution: 'server'`. Internally completed tool-search protocol items are omitted from the final
+  result returned to OpenCode. Server calls that already have an output and explicit
+  `openai.tools.toolSearch()` provider tools remain supported.
 
   The compatibility fork also avoids serializing assistant-message, reasoning, and tool-search item
   references across normal OpenCode turns. It replays content instead because the configured compatible

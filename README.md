@@ -11,10 +11,11 @@ That package difference is behaviorally significant because it changes the JSON 
 proxy; it is not a second proxy or a different upstream endpoint.
 
 The fork does not modify OpenCode's tool registry and does not add a plugin. It recognizes
-`tool_search_call` directly in the Responses API response path. For a client-side call, the provider
-creates a matching `tool_search_output` with `tools: []`, continues the internal Responses request,
-and consumes the protocol item. OpenCode therefore receives neither an OpenAI-specific
-`tool_search_call` nor an unknown tool call.
+`tool_search_call` directly in the Responses API response path. When a call has no matching
+`tool_search_output` in the same response, the provider creates one with `tools: []`, continues the
+internal Responses request, and consumes the protocol item. This covers compatible endpoints that
+label an unresolved call as either client- or server-executed. OpenCode therefore receives neither
+an OpenAI-specific pending `tool_search_call` nor an unknown tool call.
 
 The normal OpenCode instruction remains `No tool_search. Use listed tools only.` Explicit upstream
 `openai.tools.toolSearch()` provider tools remain available when a caller intentionally opts in.

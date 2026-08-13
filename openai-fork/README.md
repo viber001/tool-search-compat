@@ -37,29 +37,31 @@ shares an endpoint and API key with another provider.
 
 ## Fork-Specific Behavior
 
-### Transparent Client `tool_search_call` Handling
+### Transparent Pending `tool_search_call` Handling
 
 The initial request uses only the tools supplied by OpenCode. The fork does not
 automatically add `openai.tools.toolSearch()` and does not declare a hidden
 `tool_search` tool.
 
-If the endpoint nevertheless returns a Responses API item with
-`type: "tool_search_call"` and `execution: "client"`, the provider:
+If the endpoint nevertheless returns a Responses API `tool_search_call` without
+a matching `tool_search_output` in the same response, the provider:
 
 1. Builds a matching `tool_search_output` with `status: "completed"` and
    `tools: []`.
 2. Appends the replayable output from that response and the no-op output to an
    internal follow-up Responses request.
 3. Repeats for at most three total request rounds.
-4. Removes client-side `tool_search_call` and `tool_search_output` items from
-   the final result returned to OpenCode.
+4. Removes the internally completed `tool_search_call` and `tool_search_output`
+   items from the final result returned to OpenCode.
 
 This is a protocol compatibility fallback, not real dynamic tool discovery.
 The empty catalog is intentional because OpenCode already sent its available
 tool definitions in the initial request.
 
-Server-executed tool search and explicitly configured
-`openai.tools.toolSearch()` remain supported by the upstream provider path.
+This also handles compatible endpoints that mark an unresolved call as
+`execution: "server"`; otherwise OpenCode records that call as an unknown
+provider-executed tool. Server calls that already have a matching output, and
+explicitly configured `openai.tools.toolSearch()`, remain on the upstream path.
 
 ### Reasoning Replay Safety
 
@@ -115,8 +117,8 @@ Consequences include:
 - chunk boundaries and cancellation behavior differ from stock
   `@ai-sdk/openai` Responses streaming.
 
-This tradeoff ensures the provider can consume a client-side
-`tool_search_call` before exposing a stream to OpenCode.
+This tradeoff ensures the provider can consume a pending `tool_search_call`
+before exposing a stream to OpenCode.
 
 ## What Remains Upstream-Compatible
 

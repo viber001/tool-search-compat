@@ -140,14 +140,19 @@ call/output；只有 `tsc_*` ID、无法还原协议内容的 provider-executed 
 
 文件：`openai-fork/src/responses/openai-responses-language-model.ts:749-783`
 
-上游单次请求后直接解析结果；fork 会在代理返回 client-side `tool_search_call` 时：
+上游单次请求后直接解析结果；fork 会在代理返回没有匹配 `tool_search_output` 的
+`tool_search_call` 时：
 
 1. 将上一轮可回放的 `response.output` 追加到下一轮 input；reasoning 只发送
    `encrypted_content` 和 summary，不发送 `rs_*` 服务端 ID。
 2. 追加 `tool_search_output`，其中 `tools` 固定为空数组，不加载额外工具。
 3. 最多重复 3 轮。
 
-初始请求不需要声明 `tool_search`。这会改变特定响应的请求次数、延迟、token 消耗和最终 request body，属于有意的兼容行为差异。
+初始请求不需要声明 `tool_search`。判断依据是同一 response 中是否已有相同 `call_id` 的
+`tool_search_output`，而不是只看 `execution`。这是因为兼容 endpoint 实测会把尚未完成的调用
+标为 `execution: "server"`；若直接返回，OpenCode 会把它保存为未知的 provider-executed
+`invalid` 工具。这会改变特定响应的请求次数、延迟、token 消耗和最终 request body，属于有意
+的兼容行为差异。
 
 ### 4.1 与旧版 OpenCode no-op 路径的上下文和 prompt cache 差异
 
@@ -226,6 +231,13 @@ return {
 - 代理触发隐藏 `tool_search_call` 的 CLI 请求：通过并返回 `OK`。
 - 包含 reasoning、skill 调用、多个文件工具调用和 Markdown 编辑的跨轮 CLI 请求：通过并返回最终答案；诊断中没有 `item_reference`，历史 reasoning 均包含 `encrypted_content`。
 - 桌面端会话已由用户确认测试通过。
+- 2026-08-13 会话 `ses_00726185effeV2mLszOKvdM1DV` 证明 endpoint 也会返回孤立的
+  `execution: "server"` tool-search call；OpenCode 将其记录为 `invalid`，call ID 分别包括
+  `tsc_0421aed147facdc8016a7d2aba8ce48191abd51acbf63b8e76`、
+  `tsc_0421aed147facdc8016a7d2aead000819186269e62fe800a6f` 和
+  `tsc_0421aed147facdc8016a7d2ed7047c819183785fca12fba94b`。
+- 定向 mock transport 验证：孤立的 server call 会触发第二次请求，follow-up 同时包含原
+  `tool_search_call` 和同一 `call_id` 的 `tool_search_output(tools: [])`，最终只返回文本 `OK`。
 - stock `@ai-sdk/openai` 与 fork 使用同一代理地址时，fork 的未配置 `store` 请求体显式包含
   `store: true`；stock SDK 的 wire JSON 可能省略该字段。
 
@@ -241,7 +253,10 @@ return {
 - Responses 请求的轮数、request body、延迟和 token 消耗；
 - 所有 Responses `doStream` 的实现方式和流式时序。
 
-因此当前准确表述应是：**fork 保留官方 SDK 的主体实现，并在 provider 层增加 Responses `tool_search_call` 的透明 no-op 降级；默认请求不声明 `tool_search`，client-side 调用不会暴露给 OpenCode。不能宣称 Responses 的所有非兼容层行为完全等价。**
+因此当前准确表述应是：**fork 保留官方 SDK 的主体实现，并在 provider 层增加 Responses
+`tool_search_call` 的透明 no-op 降级；默认请求不声明 `tool_search`，没有匹配 output 的 pending
+调用不会暴露给 OpenCode，包括被兼容 endpoint 误标为 server-executed 的调用。不能宣称
+Responses 的所有非兼容层行为完全等价。**
 
 ## 风险与后续验证边界
 
