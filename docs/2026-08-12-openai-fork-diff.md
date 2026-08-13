@@ -156,6 +156,9 @@ call/output；只有 `tsc_*` ID、无法还原协议内容的 provider-executed 
 
 ### 4.1 与旧版 OpenCode no-op 路径的上下文和 prompt cache 差异
 
+逐 cycle 的 Local Context、实际 Responses API Input、理论 cache prefix 和未来 explicit
+breakpoint 方案见 [`2026-08-13-tool-search-prompt-cache.md`](./2026-08-13-tool-search-prompt-cache.md)。
+
 历史上的 OpenCode no-op 兼容路径（提交 `8318289` 的 `index.ts`）会把
 `tool_search_call` 暴露给 OpenCode。OpenCode 将这个 assistant tool-call 和返回的
 `tool_search_output(tools: [])` 写入自己的上下文，下一次调用再通过 prompt 转换把它们发回
