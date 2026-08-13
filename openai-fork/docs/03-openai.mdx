@@ -170,6 +170,17 @@ The following provider options are available:
   result returned to OpenCode. Server calls that already have an output and explicit
   `openai.tools.toolSearch()` provider tools remain supported.
 
+  If a response contains both a pending `tool_search_call` and an ordinary `function_call`, the hidden
+  follow-up contains only the tool-search call and its empty output. Assistant output and the ordinary
+  function call are held and then returned to OpenCode, which executes the function and supplies its
+  `function_call_output` on the next turn.
+
+  The fork reads the standard `providerOptions.openai` namespace first. When that namespace is absent,
+  it falls back to the configured provider namespace, for example
+  `providerOptions['headroom-openai-fork']`, and validates it with the same complete Responses options
+  schema. This applies to `reasoningEffort`, `store`, `promptCacheKey`, `textVerbosity`, `include`, and
+  the other supported OpenAI options.
+
   The compatibility fork also avoids serializing assistant-message, reasoning, and tool-search item
   references across normal OpenCode turns. It replays content instead because the configured compatible
   endpoint does not reliably persist `msg_*`, `rs_*`, and `tsc_*` items. For hidden tool-search

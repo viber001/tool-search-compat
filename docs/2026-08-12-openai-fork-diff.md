@@ -52,6 +52,11 @@ http://127.0.0.1:8787/v1
 - fork 识别 Responses API 返回的 `tool_search_call`。对 `execution: "client"` 的调用，直接构造匹配的 `tool_search_output`，固定返回 `tools: []`，并在 provider 内继续请求，不把该协议项交给 OpenCode。
 - 最多自动完成 3 轮 Responses 请求。
 - 普通 `function_call`、文本和 reasoning 仍按现有 AI SDK 流程返回给 OpenCode。
+- 如果同一 response 同时包含 pending `tool_search_call` 和普通 `function_call`，fork 会暂存
+  文本、reasoning 和普通 function call；隐藏 follow-up 只追加 pending `tool_search_call` 与
+  对应的 `tool_search_output(tools: [])`。隐藏请求完成后，暂存的普通 output 返回给 OpenCode，
+  由 OpenCode 执行 function call 并在下一轮提供 `function_call_output`。这避免隐藏请求因缺少
+  function output 报 `No tool output found for function call call_...`。
 - 调用方显式提供 `openai.tools.toolSearch()` 时仍按上游方式发送 provider tool。
 - 隐藏 follow-up 不再原样回放上一轮的 reasoning output。fork 对 reasoning model 始终请求
   `reasoning.encrypted_content`，并重建不带服务端 `id` 的 reasoning input，避免将 `rs_*`
@@ -96,6 +101,13 @@ fork 本身无法在更下游覆盖该行为。类似的 `rs_... not found` 错�
 `true`，应直接捕获代理入口的 JSON。provider 内部的 `tool_search_call` 降级流程仍会继续
 follow-up request，但会先移除 reasoning output 的服务端 `id`，改用加密内容回放，不要求初始
 请求声明该工具。
+
+OpenCode 动态加载本地 file provider 时，会按配置 provider ID 放置 model/variant options，例如
+`providerOptions["headroom-openai-fork"]`。fork 仍优先解析标准 `providerOptions.openai`；该
+namespace 不存在时，再从 `this.config.provider` 去掉 `.responses` 后解析实际 provider namespace。
+fallback 使用完整的 `openaiLanguageModelResponsesOptionsSchema`，因此不仅恢复
+`reasoningEffort`，也覆盖 `store`、`reasoningSummary`、`promptCacheKey`、`textVerbosity`、
+`include` 等现有 OpenAI-specific options。
 
 ### 3.1 跨 OpenCode 轮次不复用 assistant message 和 reasoning item reference
 

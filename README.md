@@ -17,6 +17,12 @@ internal Responses request, and consumes the protocol item. This covers compatib
 label an unresolved call as either client- or server-executed. OpenCode therefore receives neither
 an OpenAI-specific pending `tool_search_call` nor an unknown tool call.
 
+When the same response also contains an ordinary `function_call`, the hidden request contains only
+the pending `tool_search_call` and its empty output. The provider holds the assistant output and
+ordinary function call until that hidden request completes, then returns them to OpenCode for normal
+tool execution. This prevents a hidden request from sending a `function_call` before OpenCode can
+produce its matching `function_call_output`.
+
 The normal OpenCode instruction remains `No tool_search. Use listed tools only.` Explicit upstream
 `openai.tools.toolSearch()` provider tools remain available when a caller intentionally opts in.
 
@@ -28,6 +34,12 @@ compatibility flow appends replayable parts of the previous response to its inte
 and does not require declaring `tool_search` in the initial request. Reasoning models always request
 encrypted content, and reasoning parts are replayed without their server-side `rs_*` IDs, so compatible
 endpoints do not receive stale reasoning references even when the proxy emits the client-side call later.
+
+OpenCode can namespace provider options by the configured provider ID when it dynamically loads the
+local file package. The fork retains `providerOptions.openai` compatibility and falls back to the
+configured namespace, such as `providerOptions['headroom-openai-fork']`, using the complete OpenAI
+Responses options schema. Model variants therefore propagate options such as `reasoningEffort`,
+`store`, `promptCacheKey`, `textVerbosity`, and `include` to the HTTP request.
 
 The stock SDK and this fork therefore do not produce identical request bodies when `store` is omitted:
 the stock SDK may omit the field, while the fork sends `store: true`. If `headroom-photonmark` works

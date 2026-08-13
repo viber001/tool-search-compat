@@ -172,6 +172,12 @@ function prepareCodexToolSearchFollowUpInput(
   });
 }
 
+function getConfiguredProviderOptionsName(provider: string): string {
+  return provider.endsWith('.responses')
+    ? provider.slice(0, -'.responses'.length)
+    : provider;
+}
+
 import type {
   ResponsesCompactionProviderMetadata,
   ResponsesProviderMetadata,
@@ -372,6 +378,21 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
     if (openaiOptions == null && providerOptionsName !== 'openai') {
       openaiOptions = await parseProviderOptions({
         provider: 'openai',
+        providerOptions,
+        schema: openaiLanguageModelResponsesOptionsSchema,
+      });
+    }
+
+    const configuredProviderOptionsName = getConfiguredProviderOptionsName(
+      this.config.provider,
+    );
+    if (
+      openaiOptions == null &&
+      configuredProviderOptionsName !== providerOptionsName &&
+      configuredProviderOptionsName !== 'openai'
+    ) {
+      openaiOptions = await parseProviderOptions({
+        provider: configuredProviderOptionsName,
         providerOptions,
         schema: openaiLanguageModelResponsesOptionsSchema,
       });
@@ -752,6 +773,14 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
     let responseHeaders: Record<string, string> | undefined;
     let response!: InferSchema<typeof openaiResponsesResponseSchema>;
     let rawResponse: unknown;
+    let deferredOpenCodeResult:
+      | {
+          response: InferSchema<typeof openaiResponsesResponseSchema>;
+          responseHeaders: Record<string, string> | undefined;
+          rawResponse: unknown;
+          requestBody: typeof requestBody;
+        }
+      | undefined;
     const request = ++codexToolSearchRequestSequence;
 
     for (let round = 0; round < MAX_CODEX_TOOL_SEARCH_ROUNDS; round++) {
@@ -803,6 +832,14 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
         });
       }
 
+      if (deferredOpenCodeResult != null) {
+        response = deferredOpenCodeResult.response;
+        responseHeaders = deferredOpenCodeResult.responseHeaders;
+        rawResponse = deferredOpenCodeResult.rawResponse;
+        requestBody = deferredOpenCodeResult.requestBody;
+        break;
+      }
+
       const toolSearchOutputCallIds = new Set(
         response.output.flatMap(part =>
           part.type === 'tool_search_output' && part.call_id != null
@@ -822,6 +859,25 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
         break;
       }
 
+      if (response.output.some(part => part.type === 'function_call')) {
+        const pendingToolSearchCallIds = new Set(
+          pendingToolSearchCalls.map(call => call.call_id ?? call.id),
+        );
+        deferredOpenCodeResult = {
+          response: {
+            ...response,
+            output: response.output.filter(
+              part =>
+                part.type !== 'tool_search_call' ||
+                !pendingToolSearchCallIds.has(part.call_id ?? part.id),
+            ),
+          },
+          responseHeaders,
+          rawResponse,
+          requestBody,
+        };
+      }
+
       if (round === MAX_CODEX_TOOL_SEARCH_ROUNDS - 1) {
         throw new APICallError({
           message:
@@ -839,7 +895,9 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
         ...requestBody,
         input: [
           ...(Array.isArray(requestBody.input) ? requestBody.input : []),
-          ...prepareCodexToolSearchFollowUpInput(response.output),
+          ...(deferredOpenCodeResult == null
+            ? prepareCodexToolSearchFollowUpInput(response.output)
+            : pendingToolSearchCalls),
           ...pendingToolSearchCalls.map(call =>
             toolSearchOutput(call),
           ),

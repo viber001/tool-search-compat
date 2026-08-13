@@ -49,10 +49,18 @@ a matching `tool_search_output` in the same response, the provider:
 1. Builds a matching `tool_search_output` with `status: "completed"` and
    `tools: []`.
 2. Appends the replayable output from that response and the no-op output to an
-   internal follow-up Responses request.
+   internal follow-up Responses request when no ordinary `function_call` is
+   present.
 3. Repeats for at most three total request rounds.
 4. Removes the internally completed `tool_search_call` and `tool_search_output`
    items from the final result returned to OpenCode.
+
+If the same response also contains an ordinary `function_call`, the provider
+holds the assistant output and function call for OpenCode, sends an internal
+follow-up containing only the pending `tool_search_call` and its empty output,
+then returns the held output. The ordinary function call is never placed in the
+hidden request, so OpenCode can execute it and send the matching
+`function_call_output` on the next turn.
 
 This is a protocol compatibility fallback, not real dynamic tool discovery.
 The empty catalog is intentional because OpenCode already sent its available
@@ -80,8 +88,8 @@ later prompts.
 
 ### Explicit `store: true`
 
-Responses requests send `store: true` when `providerOptions.openai.store` is
-omitted:
+Responses requests send `store: true` when the parsed provider option `store`
+is omitted:
 
 ```ts
 const store = openaiOptions?.store ?? true;
@@ -90,6 +98,13 @@ const store = openaiOptions?.store ?? true;
 Some compatible endpoints interpret an omitted field as `false`. Sending the
 default explicitly prevents request conversion and endpoint persistence from
 using conflicting assumptions. An explicit `store: false` remains `false`.
+
+The fork first reads the standard `providerOptions.openai` namespace. If it is
+absent, it also reads the namespace derived from the configured provider name,
+such as `providerOptions['headroom-openai-fork']`. The same complete Responses
+options schema is used for both namespaces, including `store`,
+`reasoningEffort`, `reasoningSummary`, `promptCacheKey`, `textVerbosity`, and
+`include`.
 
 ### Function Tool Name Mapping
 
