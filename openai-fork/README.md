@@ -78,13 +78,15 @@ follow-up, reasoning output is reconstructed from encrypted content and summary
 without replaying server-side `rs_*` item IDs. This avoids compatible endpoints
 interpreting those IDs as stale item references.
 
-Normal OpenCode turns also avoid assistant-message, reasoning, and tool-search
-item-reference serialization. The configured compatibility endpoint does not
-reliably retain those response items across turns, even when the request uses
-`store: true`, so the fork sends replayable content instead of relying on
-`msg_*`, `rs_*`, or `tsc_*` IDs. A provider-executed `tsc_*` item that OpenCode
-records as an unknown tool cannot be reconstructed safely and is omitted from
-later prompts.
+Normal OpenCode turns also avoid assistant-message and reasoning item-reference
+serialization. The configured compatibility endpoint does not reliably retain
+those response items across turns, even when the request uses `store: true`, so
+the fork sends replayable content instead of relying on `msg_*` or `rs_*` IDs.
+
+Recognized `tool_search` history keeps the stock item-reference behavior. The
+fork only omits a provider-executed `tsc_*` item when OpenCode recorded it as an
+unknown tool and retained no protocol fields from which the call or output can
+be reconstructed safely.
 
 ### Explicit `store: true`
 

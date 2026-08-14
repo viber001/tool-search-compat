@@ -142,9 +142,10 @@ fork 因此对正常 OpenCode prompt 转换启用独立兼容开关：
 保存；下一轮无法从该 part 安全重建原始 `tool_search_call`，但旧转换逻辑仍把它发送为
 `item_reference`。
 
-当前 fork 也禁用 tool-search item reference：有完整 input/output 的 tool-search 历史会重建为
-call/output；只有 `tsc_*` ID、无法还原协议内容的 provider-executed unknown item 会从后续 prompt
-中省略。使用 `opencode run --continue --session ses_00afe9333ffexa3222RLqSswNK --fork ...`
+当前 fork 只对无法重建的未知 tool-search history 做防御：已识别的 `tool_search` call/result 保持
+stock 的 item-reference 行为；只有 `tsc_*` ID、无法还原协议内容的 provider-executed unknown item
+会从后续 prompt 中省略。使用
+`opencode run --continue --session ses_00afe9333ffexa3222RLqSswNK --fork ...`
 保留原始历史复测后成功返回 `OK`，出错的 `tsc_04e363937e149efc016a7d1824ed388191b4ee2f359c1cb301`
 未再出现在 request input。
 

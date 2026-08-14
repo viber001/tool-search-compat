@@ -139,6 +139,92 @@ GPT-5.6 的 cache write 按 uncached input rate 的 1.25 倍计费，cache read 
 如果 `cache_write_tokens` 持续较高但 `cached_tokens` 较低，应检查 implicit breakpoint 是否
 包含了会在后续 request 中消失或变化的内容。[OpenAI prompt caching 文档][2]
 
+## 2026-08-13 Request-Level Diff 实测
+
+使用真实 `opencode run` 驱动本地 mock Responses endpoint，模型配置名为
+`gpt-5.6-luna`。mock 只替代远端响应；初始 prompt、provider 转换、hidden follow-up、
+普通 `read` 工具执行和下一 OpenCode cycle 都由 OpenCode 与当前 fork 实际完成。
+
+比较单位是完整 JSON item 的逐项相等，不只是 `type`。初始请求都有两个共同 item：
+
+```text
+developer
+user
+```
+
+### 返回 `[msg(B), tsc(C)]`
+
+mock 在 hidden follow-up 后返回 `[msg(D), fc(E)]`，OpenCode 执行 E 并加入 `fco(F)`：
+
+```text
+hidden request:
+developer user raw_ass_msg(B) tsc(C) tso(C)
+
+next OpenCode request:
+developer user opencode_ass_msg(D) fc(E) fco(F)
+```
+
+完整 JSON item 的共同 prefix 是 2 项，只到 `developer user`。当前纯 tool-search 路径
+不会把首个响应的 `msg(B)` 合并回最终 provider result，因此下一 OpenCode request 从
+`msg(D)` 开始。
+
+### 返回 `[msg(B), tsc(C), fc(E)]`
+
+当前 mixed path 不把 E 放进 hidden follow-up：
+
+```text
+hidden request:
+developer user tsc(C) tso(C)
+
+next OpenCode request:
+developer user opencode_ass_msg(B) fc(E) fco(F)
+```
+
+完整 JSON item 的共同 prefix 同样是 2 项。
+
+### 不同 tail 方案
+
+基于 OpenCode 实际打印到 mock endpoint 的 request body，又比较了以下候选输入：
+
+| 场景 | Hidden suffix 方案 | 完整 JSON item prefix | 仅按 item type 的 prefix |
+| --- | --- | ---: | ---: |
+| `[msg, tsc]` | 当前 raw `msg(B) tsc(C) tso(C)`，下一轮不保留 B | 2 | 2 |
+| `[msg, tsc]` | 保留 B，但 hidden 仍使用 raw response message | 2 | 2 |
+| `[msg, tsc]` | 保留 B，hidden 使用 OpenCode canonical message | 3 | 3 |
+| `[msg, tsc, fc]` | 当前 `tsc(C) tso(C)` | 2 | 2 |
+| `[msg, tsc, fc]` | raw `msg(B) tsc(C) tso(C)` | 2 | 2 |
+| `[msg, tsc, fc]` | OpenCode canonical `msg(B) tsc(C) tso(C)` | 3 | 3 |
+
+raw Responses message 与 OpenCode 下一轮重新序列化的 assistant message 并不相同：
+
+```text
+raw message keys:
+type role id phase status content
+
+OpenCode-reserialized message keys:
+role content id phase
+
+raw output_text keys:
+type text annotations logprobs
+
+OpenCode-reserialized output_text keys:
+type text
+```
+
+因此，仅把 raw `msg` 或 `tsc/tso` 移到数组尾部不能增加精确 cache prefix。真正要让
+prefix 从 2 项增加到 3 项，hidden request 必须使用与下一 OpenCode cycle 完全相同的
+canonical item 表示；纯 `[msg, tsc]` 路径还必须把 B 合并回最终 provider result。
+
+这不再是安全的局部重排。它会同时影响 message/reasoning item 规范化、首轮可见输出保留、
+服务端 item ID 和 tool-search 协议顺序。本轮只记录实测，不把该实验方案放入生产路径。
+后续若实现，应先为 message 和 reasoning 建立共享 canonical serializer，再用真实 endpoint
+验证重排后的 `tool_search_call/tool_search_output` 仍被接受，并以 `cached_tokens` 验证收益。
+
+最终编译产物另用真实兼容服务做了低成本 sanity check：通过临时内存配置加载本地 fork，
+实际调用 `headroom-openai-fork/gpt-5.6-luna` 的 `low` variant，只要求返回 `OK`。请求成功，
+诊断显示 `store: true`，没有触发 hidden round。该检查只证明最终 `dist` 可以正常加载并调用
+真实服务，不证明上述 mock `tool_search` 排列能被真实服务接受，也不用于推断 cache 命中。
+
 ## Future: Explicit Prompt-Cache Breakpoint
 
 当前 fork 不会因为 `tool_search` history divergence 自动添加 explicit prompt-cache

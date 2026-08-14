@@ -483,7 +483,9 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
         // across OpenCode turns, even when the request uses store: true.
         avoidAssistantMessageItemReferences: true,
         avoidReasoningItemReferences: true,
-        avoidToolSearchItemReferences: true,
+        // Legacy unknown provider-tool parts only retain a tsc_* item ID, so
+        // they cannot be reconstructed or referenced safely on a later turn.
+        dropUnknownToolSearchItemReferences: true,
         hasLocalShellTool: hasOpenAITool('openai.local_shell'),
         hasShellTool: hasOpenAITool('openai.shell'),
         hasApplyPatchTool: hasOpenAITool('openai.apply_patch'),
