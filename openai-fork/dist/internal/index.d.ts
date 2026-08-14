@@ -1,5 +1,5 @@
 import * as _ai_sdk_provider from '@ai-sdk/provider';
-import { LanguageModelV4, LanguageModelV4CallOptions, LanguageModelV4GenerateResult, LanguageModelV4StreamResult, EmbeddingModelV4, ImageModelV4, TranscriptionModelV4CallOptions, TranscriptionModelV4, Experimental_TranscriptionModelV4StreamOptions, SpeechModelV4, SharedV4Warning } from '@ai-sdk/provider';
+import { LanguageModelV4, LanguageModelV4CallOptions, LanguageModelV4GenerateResult, LanguageModelV4StreamResult, EmbeddingModelV4, ImageModelV4, TranscriptionModelV4CallOptions, TranscriptionModelV4, Experimental_TranscriptionModelV4StreamOptions, SpeechModelV4, SharedV4Warning, LanguageModelV4Prompt } from '@ai-sdk/provider';
 import * as _ai_sdk_provider_utils from '@ai-sdk/provider-utils';
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE, FetchFunction } from '@ai-sdk/provider-utils';
 import { c as OpenAIChatModelId, d as OpenAICompletionModelId, e as OpenAIEmbeddingModelId, i as OpenAIConfig, f as OpenAIImageModelId, r as OpenAITranscriptionModelOptions, g as OpenAITranscriptionModelId, h as OpenAISpeechModelId, b as OpenAIResponsesModelId, y as OpenAIResponsesTool, z as OpenAIResponsesIncludeOptions, B as OpenAIResponsesInput, O as OpenAIResponsesFileSearchToolComparisonFilter, a as OpenAIResponsesFileSearchToolCompoundFilter } from '../openai-responses-provider-metadata-C1tCYWSW.js';
@@ -273,6 +273,10 @@ declare class OpenAIResponsesLanguageModel implements LanguageModelV4 {
         toolNameMapping: _ai_sdk_provider_utils.ToolNameMapping;
         providerOptionsName: string;
         isShellProviderExecuted: boolean;
+        convertPromptToInput: (prompt: LanguageModelV4Prompt) => Promise<{
+            input: OpenAIResponsesInput;
+            warnings: Array<SharedV4Warning>;
+        }>;
     }>;
     doGenerate(options: LanguageModelV4CallOptions): Promise<LanguageModelV4GenerateResult>;
     doStream(options: LanguageModelV4CallOptions): Promise<LanguageModelV4StreamResult>;

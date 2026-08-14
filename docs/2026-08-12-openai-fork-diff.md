@@ -156,10 +156,17 @@ stock 的 item-reference 行为；只有 `tsc_*` ID、无法还原协议内容�
 上游单次请求后直接解析结果；fork 会在代理返回没有匹配 `tool_search_output` 的
 `tool_search_call` 时：
 
-1. 将上一轮可回放的 `response.output` 追加到下一轮 input；reasoning 只发送
-   `encrypted_content` 和 summary，不发送 `rs_*` 服务端 ID。
-2. 追加 `tool_search_output`，其中 `tools` 固定为空数组，不加载额外工具。
-3. 最多重复 3 轮。
+1. 将 assistant 可见的 message、reasoning 和 compaction 转成 AI SDK prompt part，再调用与
+   初始请求相同的 `convertToOpenAIResponsesInput()`，生成 canonical replay input。
+2. 追加尚未完成的 `tool_search_call` 和匹配的 `tool_search_output`；`tools` 固定为空数组，
+   不加载额外工具。
+3. 若同一 response 含普通 `function_call`，该 call 不进入 hidden request，而是等待 hidden
+   request 完成后交给 OpenCode 执行；纯 tool-search 轮次的 assistant 可见输出也会合并回最终结果。
+4. 最多重复 3 轮。
+
+这里不直接复用 raw `response.output` message。raw Responses message 会携带 `status`、完整
+annotations/logprobs 等字段，而 OpenCode 下一轮经 SDK 重建的 canonical assistant input 不含这些
+字段；在大上下文中，第一项 assistant message 的 JSON 差异就足以让后续 prefix 全部失配。
 
 初始请求不需要声明 `tool_search`。判断依据是同一 response 中是否已有相同 `call_id` 的
 `tool_search_output`，而不是只看 `execution`。这是因为兼容 endpoint 实测会把尚未完成的调用

@@ -17,11 +17,18 @@ internal Responses request, and consumes the protocol item. This covers compatib
 label an unresolved call as either client- or server-executed. OpenCode therefore receives neither
 an OpenAI-specific pending `tool_search_call` nor an unknown tool call.
 
-When the same response also contains an ordinary `function_call`, the hidden request contains only
-the pending `tool_search_call` and its empty output. The provider holds the assistant output and
-ordinary function call until that hidden request completes, then returns them to OpenCode for normal
-tool execution. This prevents a hidden request from sending a `function_call` before OpenCode can
-produce its matching `function_call_output`.
+Before appending the pending `tool_search_call` and its empty output, the hidden request converts
+assistant-visible message, reasoning, and compaction output back through the same
+`convertToOpenAIResponsesInput()` path used for normal OpenCode prompts. The stable prefix therefore
+uses the same canonical wire representation that OpenCode produces on the next turn instead of raw
+Responses output items.
+
+When the same response also contains an ordinary `function_call`, that call is excluded from the
+hidden request. The provider holds the canonicalized assistant output and ordinary function call until
+the hidden request completes, then returns them to OpenCode for normal tool execution. This prevents a
+hidden request from sending a `function_call` before OpenCode can produce its matching
+`function_call_output`. Pure tool-search rounds also retain their assistant-visible output in the final
+provider result so the next OpenCode request can reuse the same canonical prefix.
 
 The normal OpenCode instruction remains `No tool_search. Use listed tools only.` Explicit upstream
 `openai.tools.toolSearch()` provider tools remain available when a caller intentionally opts in.
@@ -30,10 +37,9 @@ Responses requests also preserve the OpenAI default `store: true` explicitly on 
 for compatible endpoints that interpret an omitted `store` field as `false`; without it, later requests
 may reference response items that the endpoint did not persist. Callers can still opt out with
 `providerOptions.openai.store: false`; the fork preserves that explicit value. The hidden no-op
-compatibility flow appends replayable parts of the previous response to its internal follow-up request
-and does not require declaring `tool_search` in the initial request. Reasoning models always request
-encrypted content, and reasoning parts are replayed without their server-side `rs_*` IDs, so compatible
-endpoints do not receive stale reasoning references even when the proxy emits the client-side call later.
+compatibility flow canonicalizes replayable assistant output and appends it to its internal follow-up
+request without requiring `tool_search` in the initial request. Reasoning models always request encrypted
+content, and reasoning replay uses that content instead of an `rs_* item_reference`.
 
 OpenCode can namespace provider options by the configured provider ID when it dynamically loads the
 local file package. The fork retains `providerOptions.openai` compatibility and falls back to the

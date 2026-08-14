@@ -3033,7 +3033,7 @@ async function convertToOpenAIResponsesInput({
   hasPreviousResponseId = false,
   avoidAssistantMessageItemReferences = false,
   avoidReasoningItemReferences = false,
-  avoidToolSearchItemReferences = false,
+  dropUnknownToolSearchItemReferences = false,
   hasLocalShellTool = false,
   hasShellTool = false,
   hasApplyPatchTool = false,
@@ -3233,7 +3233,7 @@ async function convertToOpenAIResponsesInput({
                 part.toolName
               );
               if (resolvedToolName === "tool_search") {
-                if (store && id != null && !avoidToolSearchItemReferences) {
+                if (store && id != null) {
                   input.push({ type: "item_reference", id });
                   break;
                 }
@@ -3274,7 +3274,7 @@ async function convertToOpenAIResponsesInput({
                 break;
               }
               if (part.providerExecuted) {
-                if (store && id != null && !(avoidToolSearchItemReferences && id.startsWith("tsc_"))) {
+                if (store && id != null && !(dropUnknownToolSearchItemReferences && id.startsWith("tsc_"))) {
                   input.push({ type: "item_reference", id });
                 }
                 break;
@@ -3421,7 +3421,7 @@ async function convertToOpenAIResponsesInput({
               );
               if (resolvedResultToolName === "tool_search") {
                 const itemId = part.providerOptions?.[providerOptionsName]?.itemId ?? part.providerMetadata?.[providerOptionsName]?.itemId ?? part.toolCallId;
-                if (store && !avoidToolSearchItemReferences) {
+                if (store) {
                   input.push({ type: "item_reference", id: itemId });
                 } else if (part.output.type === "json") {
                   const parsedOutput = await validateTypes({
@@ -3481,7 +3481,7 @@ async function convertToOpenAIResponsesInput({
               }
               if (store) {
                 const itemId = part.providerOptions?.[providerOptionsName]?.itemId ?? part.toolCallId;
-                if (avoidToolSearchItemReferences && itemId.startsWith("tsc_")) {
+                if (dropUnknownToolSearchItemReferences && itemId.startsWith("tsc_")) {
                   break;
                 }
                 input.push({ type: "item_reference", id: itemId });
@@ -5731,21 +5731,83 @@ function toolSearchOutput(call) {
     tools: []
   };
 }
-function prepareCodexToolSearchFollowUpInput(output) {
-  return output.flatMap((part) => {
-    if (part.type !== "reasoning") {
-      return [part];
+function getReasoningSummaryParts(part) {
+  return part.summary.length === 0 ? [{ type: "summary_text", text: "" }] : part.summary;
+}
+function getReasoningProviderOptions(part) {
+  return {
+    itemId: part.id,
+    reasoningEncryptedContent: part.encrypted_content ?? null
+  };
+}
+function getTextProviderOptions(part, contentPart) {
+  return {
+    itemId: part.id,
+    ...part.phase != null && { phase: part.phase },
+    ...contentPart.annotations.length > 0 && {
+      annotations: contentPart.annotations
     }
-    if (part.encrypted_content == null) {
+  };
+}
+function prepareCodexToolSearchCanonicalPrompt({
+  output,
+  providerOptionsName
+}) {
+  const content = [];
+  for (const part of output) {
+    switch (part.type) {
+      case "reasoning": {
+        for (const summary of getReasoningSummaryParts(part)) {
+          content.push({
+            type: "reasoning",
+            text: summary.text,
+            providerOptions: {
+              [providerOptionsName]: getReasoningProviderOptions(part)
+            }
+          });
+        }
+        break;
+      }
+      case "message": {
+        for (const contentPart of part.content) {
+          content.push({
+            type: "text",
+            text: contentPart.text,
+            providerOptions: {
+              [providerOptionsName]: getTextProviderOptions(part, contentPart)
+            }
+          });
+        }
+        break;
+      }
+      case "compaction": {
+        content.push({
+          type: "custom",
+          kind: "openai.compaction",
+          providerOptions: {
+            [providerOptionsName]: {
+              type: "compaction",
+              itemId: part.id,
+              encryptedContent: part.encrypted_content
+            }
+          }
+        });
+        break;
+      }
+    }
+  }
+  return content.length === 0 ? [] : [{ role: "assistant", content }];
+}
+function prepareCodexToolSearchPassthroughInput({
+  output,
+  pendingToolSearchCallIds,
+  excludeFunctionCalls
+}) {
+  return output.flatMap((part) => {
+    if (part.type === "message" || part.type === "reasoning" || part.type === "compaction" || part.type === "function_call" && excludeFunctionCalls || part.type === "tool_search_call" && pendingToolSearchCallIds.has(part.call_id ?? part.id)) {
       return [];
     }
-    return [
-      {
-        type: "reasoning",
-        encrypted_content: part.encrypted_content,
-        summary: part.summary
-      }
-    ];
+    return [part];
   });
 }
 function getConfiguredProviderOptionsName(provider) {
@@ -5955,8 +6017,8 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
       outputSchemaToolNames
     });
     const store = openaiOptions?.store ?? true;
-    const { input, warnings: inputWarnings } = await convertToOpenAIResponsesInput({
-      prompt,
+    const convertPromptToInput = (prompt2) => convertToOpenAIResponsesInput({
+      prompt: prompt2,
       toolNameMapping,
       systemMessageMode: openaiOptions?.systemMessageMode ?? (isReasoningModel ? "developer" : modelCapabilities.systemMessageMode),
       providerOptionsName,
@@ -5969,7 +6031,9 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
       // across OpenCode turns, even when the request uses store: true.
       avoidAssistantMessageItemReferences: true,
       avoidReasoningItemReferences: true,
-      avoidToolSearchItemReferences: true,
+      // Legacy unknown provider-tool parts only retain a tsc_* item ID, so
+      // they cannot be reconstructed or referenced safely on a later turn.
+      dropUnknownToolSearchItemReferences: true,
       hasLocalShellTool: hasOpenAITool("openai.local_shell"),
       hasShellTool: hasOpenAITool("openai.shell"),
       hasApplyPatchTool: hasOpenAITool("openai.apply_patch"),
@@ -5977,6 +6041,7 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
       customProviderToolNames: customProviderToolNames.size > 0 ? customProviderToolNames : void 0,
       outputSchemaToolNames: outputSchemaToolNames.size > 0 ? outputSchemaToolNames : void 0
     });
+    const { input, warnings: inputWarnings } = await convertPromptToInput(prompt);
     warnings.push(...inputWarnings);
     const strictJsonSchema = openaiOptions?.strictJsonSchema ?? true;
     let include = openaiOptions?.include;
@@ -6150,7 +6215,8 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
       store,
       toolNameMapping,
       providerOptionsName,
-      isShellProviderExecuted
+      isShellProviderExecuted,
+      convertPromptToInput
     };
   }
   async doGenerate(options) {
@@ -6160,7 +6226,8 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
       webSearchToolName,
       toolNameMapping,
       providerOptionsName,
-      isShellProviderExecuted
+      isShellProviderExecuted,
+      convertPromptToInput
     } = await this.getArgs(options);
     let requestBody = body;
     const url = this.config.url({
@@ -6172,6 +6239,7 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
     let response;
     let rawResponse;
     let deferredOpenCodeResult;
+    const accumulatedVisibleOutput = [];
     const request = ++codexToolSearchRequestSequence;
     for (let round = 0; round < MAX_CODEX_TOOL_SEARCH_ROUNDS; round++) {
       logCodexToolSearchRequest({
@@ -6232,23 +6300,35 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
         (part) => part.type === "tool_search_call" && !toolSearchOutputCallIds.has(part.call_id ?? part.id)
       );
       if (pendingToolSearchCalls.length === 0) {
+        if (accumulatedVisibleOutput.length > 0) {
+          response = {
+            ...response,
+            output: [...accumulatedVisibleOutput, ...response.output]
+          };
+        }
         break;
       }
-      if (response.output.some((part) => part.type === "function_call")) {
-        const pendingToolSearchCallIds = new Set(
-          pendingToolSearchCalls.map((call) => call.call_id ?? call.id)
-        );
+      const pendingToolSearchCallIds = new Set(
+        pendingToolSearchCalls.map((call) => call.call_id ?? call.id)
+      );
+      const visibleOutput = response.output.filter(
+        (part) => part.type !== "tool_search_call" || !pendingToolSearchCallIds.has(part.call_id ?? part.id)
+      );
+      const hasFunctionCall2 = response.output.some(
+        (part) => part.type === "function_call"
+      );
+      if (hasFunctionCall2) {
         deferredOpenCodeResult = {
           response: {
             ...response,
-            output: response.output.filter(
-              (part) => part.type !== "tool_search_call" || !pendingToolSearchCallIds.has(part.call_id ?? part.id)
-            )
+            output: [...accumulatedVisibleOutput, ...visibleOutput]
           },
           responseHeaders,
           rawResponse,
           requestBody
         };
+      } else {
+        accumulatedVisibleOutput.push(...visibleOutput);
       }
       if (round === MAX_CODEX_TOOL_SEARCH_ROUNDS - 1) {
         throw new APICallError2({
@@ -6261,11 +6341,23 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
           isRetryable: false
         });
       }
+      const canonicalPrompt = prepareCodexToolSearchCanonicalPrompt({
+        output: visibleOutput,
+        providerOptionsName
+      });
+      const { input: canonicalInput, warnings: canonicalInputWarnings } = await convertPromptToInput(canonicalPrompt);
+      warnings.push(...canonicalInputWarnings);
       requestBody = {
         ...requestBody,
         input: [
           ...Array.isArray(requestBody.input) ? requestBody.input : [],
-          ...deferredOpenCodeResult == null ? prepareCodexToolSearchFollowUpInput(response.output) : pendingToolSearchCalls,
+          ...canonicalInput,
+          ...prepareCodexToolSearchPassthroughInput({
+            output: response.output,
+            pendingToolSearchCallIds,
+            excludeFunctionCalls: hasFunctionCall2
+          }),
+          ...pendingToolSearchCalls,
           ...pendingToolSearchCalls.map(
             (call) => toolSearchOutput(call)
           )
@@ -6291,18 +6383,12 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
     for (const part of output) {
       switch (part.type) {
         case "reasoning": {
-          if (part.summary.length === 0) {
-            part.summary.push({ type: "summary_text", text: "" });
-          }
-          for (const summary of part.summary) {
+          for (const summary of getReasoningSummaryParts(part)) {
             content.push({
               type: "reasoning",
               text: summary.text,
               providerMetadata: {
-                [providerOptionsName]: {
-                  itemId: part.id,
-                  reasoningEncryptedContent: part.encrypted_content ?? null
-                }
+                [providerOptionsName]: getReasoningProviderOptions(part)
               }
             });
           }
@@ -6430,13 +6516,7 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
             if (options.providerOptions?.[providerOptionsName]?.logprobs && contentPart.logprobs) {
               logprobs.push(contentPart.logprobs);
             }
-            const providerMetadata2 = {
-              itemId: part.id,
-              ...part.phase != null && { phase: part.phase },
-              ...contentPart.annotations.length > 0 && {
-                annotations: contentPart.annotations
-              }
-            };
+            const providerMetadata2 = getTextProviderOptions(part, contentPart);
             content.push({
               type: "text",
               text: contentPart.text,

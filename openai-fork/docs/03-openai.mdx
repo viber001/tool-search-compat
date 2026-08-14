@@ -170,10 +170,16 @@ The following provider options are available:
   result returned to OpenCode. Server calls that already have an output and explicit
   `openai.tools.toolSearch()` provider tools remain supported.
 
+  Assistant-visible message, reasoning, and compaction output is converted through the same
+  `convertToOpenAIResponsesInput()` path used by normal OpenCode prompts before it is placed in a hidden
+  follow-up. This avoids replaying raw Responses message objects whose JSON shape differs from the next
+  OpenCode request and allows the stable prefix to remain eligible for prompt-cache reuse.
+
   If a response contains both a pending `tool_search_call` and an ordinary `function_call`, the hidden
-  follow-up contains only the tool-search call and its empty output. Assistant output and the ordinary
-  function call are held and then returned to OpenCode, which executes the function and supplies its
-  `function_call_output` on the next turn.
+  follow-up contains the canonicalized assistant output followed by the tool-search call and its empty
+  output. The ordinary function call is held and then returned to OpenCode, which executes it and supplies
+  its `function_call_output` on the next turn. Pure tool-search rounds also retain earlier assistant-visible
+  output in the final provider result.
 
   The fork reads the standard `providerOptions.openai` namespace first. When that namespace is absent,
   it falls back to the configured provider namespace, for example
@@ -184,9 +190,9 @@ The following provider options are available:
   The compatibility fork also avoids serializing assistant-message and reasoning item references across
   normal OpenCode turns. It replays content instead because the configured compatible endpoint does not
   reliably persist `msg_*` and `rs_*` items. For hidden tool-search follow-ups, reasoning is reconstructed
-  from `reasoning.encrypted_content` without the server-side reasoning item ID. Recognized `tool_search`
-  history keeps the stock item-reference behavior; only unknown provider-executed `tsc_*` items that lost
-  the protocol fields needed for reconstruction are omitted.
+  from `reasoning.encrypted_content` through the canonical prompt converter instead of an `rs_*`
+  `item_reference`. Recognized `tool_search` history keeps the stock item-reference behavior; only unknown
+  provider-executed `tsc_*` items that lost the protocol fields needed for reconstruction are omitted.
 
   Responses `doStream()` is buffered in this fork: it completes `doGenerate()` first, including any
   hidden tool-search rounds, and only then exposes an AI SDK stream. This differs from the stock native

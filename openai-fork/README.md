@@ -48,19 +48,25 @@ a matching `tool_search_output` in the same response, the provider:
 
 1. Builds a matching `tool_search_output` with `status: "completed"` and
    `tools: []`.
-2. Appends the replayable output from that response and the no-op output to an
-   internal follow-up Responses request when no ordinary `function_call` is
-   present.
+2. Converts assistant-visible output through the same
+   `convertToOpenAIResponsesInput()` path used by normal OpenCode prompts, then
+   appends the pending call and no-op output to an internal follow-up request.
 3. Repeats for at most three total request rounds.
 4. Removes the internally completed `tool_search_call` and `tool_search_output`
    items from the final result returned to OpenCode.
 
 If the same response also contains an ordinary `function_call`, the provider
-holds the assistant output and function call for OpenCode, sends an internal
-follow-up containing only the pending `tool_search_call` and its empty output,
-then returns the held output. The ordinary function call is never placed in the
-hidden request, so OpenCode can execute it and send the matching
-`function_call_output` on the next turn.
+holds that call for OpenCode. The hidden follow-up contains canonicalized
+assistant message, reasoning, and compaction output followed by the pending
+`tool_search_call` and its empty output. The ordinary function call is never
+placed in the hidden request, so OpenCode can execute it and send the matching
+`function_call_output` on the next turn. Pure tool-search rounds retain earlier
+assistant-visible output in the final provider result for the same reason.
+
+This canonical replay matters for prompt caching. Raw Responses messages contain
+fields that OpenCode removes when it serializes the next prompt. Reusing the
+normal input converter makes the hidden stable prefix byte-equivalent at the
+JSON-item level to the corresponding prefix in the next OpenCode request.
 
 This is a protocol compatibility fallback, not real dynamic tool discovery.
 The empty catalog is intentional because OpenCode already sent its available
@@ -74,9 +80,9 @@ explicitly configured `openai.tools.toolSearch()`, remain on the upstream path.
 ### Reasoning Replay Safety
 
 Reasoning models always request `reasoning.encrypted_content`. During the hidden
-follow-up, reasoning output is reconstructed from encrypted content and summary
-without replaying server-side `rs_*` item IDs. This avoids compatible endpoints
-interpreting those IDs as stale item references.
+follow-up, reasoning output is reconstructed through the normal prompt converter
+from encrypted content and summary rather than replayed as a raw Responses item
+or an `rs_* item_reference`.
 
 Normal OpenCode turns also avoid assistant-message and reasoning item-reference
 serialization. The configured compatibility endpoint does not reliably retain

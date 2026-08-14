@@ -152,7 +152,7 @@ developer
 user
 ```
 
-### 返回 `[msg(B), tsc(C)]`
+### 修复前：返回 `[msg(B), tsc(C)]`
 
 mock 在 hidden follow-up 后返回 `[msg(D), fc(E)]`，OpenCode 执行 E 并加入 `fco(F)`：
 
@@ -168,7 +168,7 @@ developer user opencode_ass_msg(D) fc(E) fco(F)
 不会把首个响应的 `msg(B)` 合并回最终 provider result，因此下一 OpenCode request 从
 `msg(D)` 开始。
 
-### 返回 `[msg(B), tsc(C), fc(E)]`
+### 修复前：返回 `[msg(B), tsc(C), fc(E)]`
 
 当前 mixed path 不把 E 放进 hidden follow-up：
 
@@ -212,18 +212,57 @@ type text
 ```
 
 因此，仅把 raw `msg` 或 `tsc/tso` 移到数组尾部不能增加精确 cache prefix。真正要让
-prefix 从 2 项增加到 3 项，hidden request 必须使用与下一 OpenCode cycle 完全相同的
-canonical item 表示；纯 `[msg, tsc]` 路径还必须把 B 合并回最终 provider result。
+prefix 增长，hidden request 必须使用与下一 OpenCode cycle 完全相同的 canonical item 表示；
+纯 `[msg, tsc]` 路径还必须把 B 合并回最终 provider result。
 
-这不再是安全的局部重排。它会同时影响 message/reasoning item 规范化、首轮可见输出保留、
-服务端 item ID 和 tool-search 协议顺序。本轮只记录实测，不把该实验方案放入生产路径。
-后续若实现，应先为 message 和 reasoning 建立共享 canonical serializer，再用真实 endpoint
-验证重排后的 `tool_search_call/tool_search_output` 仍被接受，并以 `cached_tokens` 验证收益。
+### 2026-08-14 Canonical Replay 实现后复测
+
+实现没有新增 wire serializer。`getArgs()` 把当前所有 input conversion 参数封装为同一个
+`convertPromptToInput()`；初始 OpenCode prompt 和 hidden replay 都调用现有
+`convertToOpenAIResponsesInput()`。response 中 assistant 可见的 message、reasoning 和
+compaction 只先映射为 AI SDK assistant prompt part，再交给该 converter 生成 wire item。
+
+使用同样的真实 `opencode run` + mock endpoint 流程，按完整 JSON item 断言：
+
+```text
+返回 [msg(B), tsc(C)]：
+
+hidden request:
+developer user B_canonical tsc(C) tso(C)
+
+next OpenCode request:
+developer user B_canonical D_canonical fc(E) fco(F)
+
+exact common prefix: 3 items
+```
+
+纯路径会把首轮 B 合并回最终 provider result，因此下一轮仍包含同一个 `B_canonical`。
+
+```text
+返回 [msg(A), tsc(B), msg(C), fc(D)]：
+
+hidden request:
+developer user A_canonical C_canonical tsc(B) tso(B)
+
+next OpenCode request:
+developer user A_canonical C_canonical fc(D) fco(E)
+
+exact common prefix: 4 items
+```
+
+mixed hidden request 中不存在 `fc(D)`；OpenCode 收到 A、C、D，执行 D 后才在下一 cycle 加入
+`fco(E)`。最终规模复测将 A 设为 100,000 字符、C 设为 3,000 字符；两个 canonical
+assistant item 仍与下一 OpenCode request 逐 JSON item 相等。
+
+这证明大上下文 A/C 不再因为 raw Responses item 与 canonical item 的字段差异从第一项开始
+失配。是否实际获得对应数量的 `cached_tokens` 仍取决于兼容服务的 cache key、breakpoint、
+TTL 和路由；request-level prefix 相等是必要条件，不是计费命中的充分条件。
 
 最终编译产物另用真实兼容服务做了低成本 sanity check：通过临时内存配置加载本地 fork，
-实际调用 `headroom-openai-fork/gpt-5.6-luna` 的 `low` variant，只要求返回 `OK`。请求成功，
-诊断显示 `store: true`，没有触发 hidden round。该检查只证明最终 `dist` 可以正常加载并调用
-真实服务，不证明上述 mock `tool_search` 排列能被真实服务接受，也不用于推断 cache 命中。
+实际调用 `headroom-openai-fork/gpt-5.6-luna` 的 `low` variant，让 OpenCode 读取仓库 README。
+请求成功并完成正常 `function_call/function_call_output`；诊断显示两次 provider 调用均为
+`round: 0`，没有触发 hidden tool-search round。该检查证明最终 `dist` 可以正常加载并调用真实
+服务，但不证明 canonical `tsc/tso` hidden 排列已被真实服务接受，也不用于推断 cache 命中。
 
 ## Future: Explicit Prompt-Cache Breakpoint
 
