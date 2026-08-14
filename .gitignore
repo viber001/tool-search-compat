@@ -1,2 +1,4 @@
 openai-fork/node_modules/
 openai-fork/*.tsbuildinfo
+openai-fork-tool-search-branching/node_modules
+openai-fork-tool-search-branching/*.tsbuildinfo

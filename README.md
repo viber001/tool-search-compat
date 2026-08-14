@@ -78,6 +78,38 @@ Do not add the fork entry as a global plugin. OpenCode stores API credentials by
 new provider needs its own API key/auth entry in `~/.local/share/opencode/auth.json`, even when it uses
 the same endpoint.
 
+### Tool-search branching variant
+
+`openai-fork-tool-search-branching/` is an alternate build for the real-API-tested mixed path:
+
+```text
+A tool_search_call(C) B function_call(E)
+        ↓
+A B function_call(E) function_call_output(E)
+```
+
+When a response contains both a pending tool-search call and an ordinary function call, this variant
+returns A/B and the function call directly to OpenCode. It does not send the base fork's hidden
+`tool_search_call + tool_search_output` request. Pure pending tool-search responses still use the hidden
+follow-up.
+
+Switch by using a separate provider entry:
+
+```json
+{
+  "provider": {
+    "headroom-openai-branching": {
+      "name": "headroom-openai-branching",
+      "npm": "file:///absolute/path/to/tool-search-compat/openai-fork-tool-search-branching/dist/index.js",
+      "options": { "baseURL": "http://127.0.0.1:8787/v1" }
+    }
+  }
+}
+```
+
+The real `gpt-5.6-luna` protocol experiment and its stateless-history boundary are documented in
+[`docs/2026-08-14-tool-search-branching.md`](./docs/2026-08-14-tool-search-branching.md).
+
 ## Build
 
 ```bash
