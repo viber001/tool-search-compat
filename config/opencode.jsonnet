@@ -161,13 +161,21 @@ local provider(displayName, baseURL, npm) = {
         "headroom-openai-fork0",
         "http://127.0.0.1:8787/v1",
         "file:///Users/galaxy/.config/opencode/tool-search-compat/openai-fork/dist/index.js",
-      ),
+      ) + {
+        options+: {
+          setCacheKey: true,
+        },
+      },
     "headroom-openai-fork":
       provider(
         "headroom-openai-fork",
         "http://127.0.0.1:8787/v1",
         "file:///Users/galaxy/.config/opencode/tool-search-compat/openai-fork-tool-search-branching/dist/index.js",
-      ),
+      ) + {
+        options+: {
+          setCacheKey: true,
+        },
+      },
   },
 
   shell: "zsh",
