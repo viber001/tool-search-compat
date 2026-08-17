@@ -92,6 +92,18 @@ serialization. The configured compatibility endpoint does not reliably retain
 those response items across turns, even when the request uses `store: true`, so
 the fork sends replayable content instead of relying on `msg_*` or `rs_*` IDs.
 
+The mixed branching path does not run an extra hidden request just to obtain its
+encrypted reasoning. In repeated real `gpt-5.6-luna` treatment/control runs,
+every request completed on its first network attempt. Full-history positive
+controls retained `tsc/tso` and reported the newly observed `tools: []` event
+6/6 times. Selective branches removed `tsc/tso` and reported that event 0/6
+times, even when they preserved the hidden reasoning item ID, encrypted content,
+automatic summary, and paired hidden message. Encrypted reasoning is reasoning
+continuity, not a general encrypted transcript snapshot; an accepted item can
+still be ignored when its causal items are absent. See
+`../docs/2026-08-14-tool-search-branching.md` for the protocol and semantic
+results.
+
 Recognized `tool_search` history keeps the stock item-reference behavior. The
 fork only omits a provider-executed `tsc_*` item when OpenCode recorded it as an
 unknown tool and retained no protocol fields from which the call or output can

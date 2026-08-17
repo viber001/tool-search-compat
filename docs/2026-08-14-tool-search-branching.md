@@ -365,6 +365,95 @@ function_call_output.call_id = call_Qk8x8NnyPfyGUroFUy8Nt6Rf
 
 模型继续生成并以 `stop` 完成。
 
+## Hidden encrypted reasoning 替换实验
+
+后续又验证了一个更窄的方案：先执行 hidden `tsc/tso` follow-up，再只把 hidden
+response 的 `reasoning.encrypted_content` 放进 OpenCode 分支，删除 `tsc/tso` 和 hidden
+可见 message：
+
+```text
+A B tsc tso
+      ↓ hidden response
+encrypted reasoning R + hidden message
+      ↓ branch
+A B R fc fco
+```
+
+[OpenAI Reasoning 文档][reasoning]确认，`store: false` 时 encrypted reasoning 是 stateless
+reasoning continuity 的载体；但文档同时建议 function-calling flow 回放最后一个 user message
+之后的全部 reasoning、call 和 output items，并保持这些 items 不变。[Responses migration
+文档][migrate]也要求 stateless flow preserve and replay every returned reasoning item。官方没有承诺
+可以只保留一个在 `tsc/tso` 之后生成的 reasoning item，同时删除它所依赖的 tool-search items。
+
+网络恢复后，实验被改成只验证一个新发生的事实，而不是要求恢复 query 或完整历史：
+
+```text
+tsc → tso(tools: [])
+```
+
+hidden request 明确要求模型检查 `tools` 是否为空、把这个刚观察到的事实保留在 reasoning state，
+然后只输出固定文本 `HIDDEN_DONE`。下一分支出现普通 `branch_probe` output 后，模型必须只回答：
+
+```text
+EMPTY | NONEMPTY | UNKNOWN
+```
+
+其中 `first-only` reasoning 产生于 `tso([])` 之前，`first + hidden` 比它新增的唯一模型状态就是
+hidden response 的 reasoning item，因此这组对照直接测试“刚新增的 thinking 是否让分支记得
+`tso([])`”。
+
+真实 `gpt-5.6-luna` treatment/control 使用以下共同边界：
+
+- `store: false`；
+- 没有 `previous_response_id` 或 `conversation`；
+- branch request 没有 `tool_search_call` 或 `tool_search_output`；
+- branch 仍包含匹配的普通 `function_call/function_call_output`；
+- `reasoning.context: "all_turns"`；
+- 同时测试 reasoning 去掉 `id` 与保留真实 `rs_*` item `id`；
+- 同时测试只带 reasoning 与带上配对 hidden message；
+- 另启用 `reasoning.summary: "auto"`，区分 summary 与 encrypted state。
+
+网络层不把 `UNKNOWN` 当结果：每个 request 都要求 HTTP 成功、response
+`status: "completed"`、`error: null`、存在 response ID 和 usage，否则整轮失败。重测中的所有
+请求都在第一次 attempt 成功；没有 retry、5xx、incomplete response 或 transport error。
+
+两组各 3 次的严格结果：
+
+| Branch input | `EMPTY` | `UNKNOWN` 或其他 |
+| --- | ---: | ---: |
+| 不带 reasoning 的 control | 0/6 | 6/6 |
+| 只带 first reasoning（发生在 `tso` 前） | 0/6 | 6/6 |
+| 只带 hidden encrypted reasoning | 0/6 | 6/6 |
+| first + hidden encrypted reasoning | 0/6 | 6/6 |
+| 保留 hidden reasoning `id` | 0/6 | 6/6 |
+| reasoning + 配对 hidden message | 0/6 | 6/6 |
+| 完整保留 `tsc/tso` 的 positive control | 6/6 | 0/6 |
+
+每次 hidden response 都真正收到了 `tso(tools: [])`，输出 `HIDDEN_DONE`，并返回 encrypted
+reasoning；记录到的 encrypted payload 长度约为 1272–1444 字符，reasoning token 也大于 0。
+开启 `summary: "auto"` 后，summary 通常为空，唯一出现的 summary 是
+`Confirming required reply format`，没有记录 `tools` 为空这个事实。
+
+完整历史 positive control 6/6 回答 `EMPTY`，证明模型、阶段提示和 `tso([])` 本身都正常；失败
+只发生在删掉 `tsc/tso` 的 selective branch。所有 selective branch 也都被 API 接受，因此实验
+区分了两个结论：
+
+```text
+协议接受 selective encrypted reasoning replay: YES
+分支可观察到“刚收到 tso([])”这段新增记忆: NO
+```
+
+encrypted payload 本身不可解密检查，因此不能断言服务器内部从未表示过该事实。可以确定的是：
+当它脱离产生它的 `tsc/tso` sequence 被单独放入新分支时，模型无法访问这段事实；可能是该事实
+没有写进 reasoning item，也可能是服务端把缺少因果 items 的 reasoning state 忽略为不兼容。
+无论是哪一种，当前 API 下它都不能作为可用的新增记忆。一次 HTTP 200 只证明 payload 合法，
+不证明 reasoning continuity 生效。
+
+因此当前 branching variant 不执行额外 hidden request 来获取 reasoning，也不把 hidden
+reasoning 注入下一分支。这样既避免额外 latency/token cost，也避免把一个在 `tsc/tso` 之后生成
+的 opaque item 放进已经删除 `tsc/tso` 的 sequence。若未来 API 明确支持 selective reasoning
+branching，或稳定的真实评测证明其语义连续性，再单独增加实验开关。
+
 ## 结论
 
 ```text
@@ -419,3 +508,5 @@ file:///Users/galaxy/.config/opencode/tool-search-compat/openai-fork-tool-search
 
 [tool-search]: https://developers.openai.com/api/docs/guides/tools-tool-search
 [conversation-state]: https://developers.openai.com/api/docs/guides/conversation-state
+[reasoning]: https://developers.openai.com/api/docs/guides/reasoning
+[migrate]: https://developers.openai.com/api/docs/guides/migrate-to-responses
