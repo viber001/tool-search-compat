@@ -100,7 +100,70 @@ local models = {
     ),
 };
 
-local provider(displayName, baseURL, npm) = {
+// Prices are recorded exactly as supplied, without currency conversion.
+//
+// Reasoning support, verified 2026-08-24 against vendor docs:
+// - GLM-5.3: thinking always on; reasoning_effort low/high/max, default max
+//   (docs.bigmodel.cn/cn/guide/models/text/glm-5.3).
+// - DeepSeek-V4-Pro-0813 / DeepSeek-V4-Flash-0731: thinking on by default;
+//   low/high/max, default high; non-thinking mode available
+//   (api-docs.deepseek.com/quick_start/pricing).
+// - Qwen3.8-Max: hybrid thinking; enable_thinking on/off, default on; effort
+//   control only via the Responses API reasoning.effort
+//   (help.aliyun.com/zh/model-studio/deep-thinking).
+// - Kimi-K3: thinking always on; reasoning_effort low/high/max, default max
+//   (platform.kimi.com/docs/guide/use-reasoning-effort).
+// None support medium/xhigh, so those variants are omitted.
+local parateraVariants(canDisable=false) =
+  {
+    low: { reasoningEffort: "low" },
+    high: { reasoningEffort: "high" },
+    max: { reasoningEffort: "max" },
+  } + (if canDisable then {
+    // Best-effort non-thinking variant; chat completions has no standard
+    // thinking off-switch, so the backend default (thinking on) may still apply.
+    none: { reasoning: false },
+  } else {
+    none: { disabled: true },
+  });
+
+local parateraModel(name, input, cacheRead, cacheWrite, output, canDisable=false) = {
+  name: name,
+  reasoning: true,
+
+  limit: {
+    context: 1000000,
+    output: 128000,
+  },
+
+  cost: {
+    input: input,
+    cache_read: cacheRead,
+    cache_write: cacheWrite,
+    output: output,
+  },
+
+  variants: parateraVariants(canDisable),
+};
+
+local parateraModels = {
+  "GLM-5.3":
+    parateraModel("GLM-5.3", "8.00", "2.00", "28.00", "28.00"),
+
+  "DeepSeek-V4-Pro-0813":
+    parateraModel("DeepSeek-V4-Pro-0813", "9.00", "0.30", "27.00", "27.00", true),
+
+  "DeepSeek-V4-Flash-0731":
+    parateraModel("DeepSeek-V4-Flash-0731", "3.00", "0.10", "9.00", "9.00", true),
+
+  "Qwen3.8-Max":
+    parateraModel("Qwen3.8-Max", "12.00", "1.50", "36.00", "36.00", true),
+
+  "Kimi-K3":
+    parateraModel("Kimi-K3", "20.00", "2.00", "100.00", "100.00"),
+};
+
+local provider(displayName, baseURL, npm, providerModels=models) = {
   name: displayName,
   npm: npm,
 
@@ -108,7 +171,7 @@ local provider(displayName, baseURL, npm) = {
     baseURL: baseURL,
   },
 
-  models: models,
+  models: providerModels,
 };
 
 {
@@ -147,6 +210,23 @@ local provider(displayName, baseURL, npm) = {
         "photonmark-codex-pay",
         "https://codex.photonmark.com/openai/v1",
         "@ai-sdk/openai",
+      ),
+
+    paratera:
+      provider(
+        "paratera",
+        "https://llmapi.paratera.com/v1",
+        "@ai-sdk/openai-compatible",
+        parateraModels,
+      ),
+
+    // @ai-sdk/openai-compatible appends /chat/completions to this base URL.
+    "paratera-headroom":
+      provider(
+        "paratera-headroom",
+        "http://10.68.247.14:8787/v1",
+        "@ai-sdk/openai-compatible",
+        parateraModels,
       ),
 
     headroom:
