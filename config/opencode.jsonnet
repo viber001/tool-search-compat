@@ -163,6 +163,56 @@ local parateraModels = {
     parateraModel("Kimi-K3", "20.00", "2.00", "100.00", "100.00"),
 };
 
+// SiliconFlow (China) models for the local headroom proxy. Five models:
+// user-mandated DeepSeek-V4-Flash / DeepSeek-V4-Pro / GLM-5.2 /
+// Kimi-K2.7-Code, plus Qwen3.5-397B-A17B. Kimi-K2.7-Code is served by the
+// live API but missing from the registry cache, so its specs come from the
+// SiliconFlow model page. The full 47-model registry set is archived in
+// config/siliconflow-cn.md. Costs are USD list prices (models.dev or
+// SiliconFlow), recorded as published, no currency conversion.
+local siliconflowModels = {
+  "moonshotai/Kimi-K2.7-Code": {
+    name: "moonshotai/Kimi-K2.7-Code",
+    // Served on siliconflow but absent from the models.dev registry cache;
+    // specs from https://www.siliconflow.com/zh-tw/models/kimi-k2-7-code
+    // (2026-08-24): no reasoning, tools + image input, 262K context/output,
+    // $0.85916 in / $0.17993 cache hit / $3.8 out per M tokens.
+    tool_call: true,
+    modalities: { input: ["text", "image"], output: ["text"] },
+    limit: { context: 262144, output: 262144 },
+    cost: { input: "0.85916", cache_read: "0.17993", output: "3.8" },
+  },
+  "zai-org/GLM-5.2": {
+    name: "GLM-5.2",
+    reasoning: true,
+    tool_call: true,
+    limit: { context: 1049000, output: 262000 },
+    cost: { input: "1.4", cache_read: "0.26", cache_write: "0", output: "4.4" },
+  },
+  "deepseek-ai/DeepSeek-V4-Pro": {
+    name: "deepseek-ai/DeepSeek-V4-Pro",
+    reasoning: true,
+    tool_call: true,
+    limit: { context: 1049000, output: 393000 },
+    cost: { input: "1.74", cache_read: "0.145", output: "3.48" },
+  },
+  "deepseek-ai/DeepSeek-V4-Flash": {
+    name: "DeepSeek V4 Flash",
+    reasoning: true,
+    tool_call: true,
+    limit: { context: 1000000, output: 384000 },
+    cost: { input: "0.14", cache_read: "0.003", output: "0.28" },
+  },
+  "Qwen/Qwen3.5-397B-A17B": {
+    name: "Qwen/Qwen3.5-397B-A17B",
+    reasoning: true,
+    tool_call: true,
+    modalities: { input: ["text", "image"], output: ["text"] },
+    limit: { context: 262144, output: 65536 },
+    cost: { input: "0.29", output: "1.74" },
+  },
+};
+
 local provider(displayName, baseURL, npm, providerModels=models) = {
   name: displayName,
   npm: npm,
@@ -227,6 +277,16 @@ local provider(displayName, baseURL, npm, providerModels=models) = {
         "http://10.68.247.14:8787/v1",
         "@ai-sdk/openai-compatible",
         parateraModels,
+      ),
+
+    // Local headroom proxy in front of SiliconFlow (China), upstream
+    // https://api.siliconflow.cn/v1 (built-in `siliconflow-cn` provider).
+    "siliconflow-headroom":
+      provider(
+        "siliconflow-headroom",
+        "http://10.68.247.14:8788/v1",
+        "@ai-sdk/openai-compatible",
+        siliconflowModels,
       ),
 
     headroom:
