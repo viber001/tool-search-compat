@@ -5687,6 +5687,10 @@ function mapShellSkills(skills) {
 // src/responses/openai-responses-language-model.ts
 var MAX_CODEX_TOOL_SEARCH_ROUNDS = 3;
 var codexToolSearchRequestSequence = 0;
+var TOOL_SEARCH_COMPAT_PROVIDER_METADATA = "toolSearchCompat";
+var diagnosticLogModulesPromise;
+var diagnosticLogs = /* @__PURE__ */ new Map();
+var diagnosticFallbackSessionKeys = /* @__PURE__ */ new Map();
 function logCodexToolSearchRequest({
   request,
   round,
@@ -5696,19 +5700,7 @@ function logCodexToolSearchRequest({
     return;
   }
   const input = Array.isArray(requestBody.input) ? requestBody.input : [];
-  const inputItems = input.map((item, index) => {
-    if (item == null || typeof item !== "object") {
-      return { index, type: typeof item };
-    }
-    const record = item;
-    return {
-      index,
-      type: record.type ?? record.role ?? "unknown",
-      ...typeof record.id === "string" ? { id: record.id } : {},
-      ...typeof record.call_id === "string" ? { callId: record.call_id } : {},
-      ...record.type === "reasoning" ? { hasEncryptedContent: typeof record.encrypted_content === "string" } : {}
-    };
-  });
+  const inputItems = summarizeDiagnosticItems(input);
   console.error(
     "OPENAI TOOL SEARCH COMPAT REQUEST",
     JSON.stringify({
@@ -5719,6 +5711,115 @@ function logCodexToolSearchRequest({
       inputItems
     })
   );
+}
+function summarizeDiagnosticItems(items) {
+  return items.map((item, index) => {
+    if (item == null || typeof item !== "object") {
+      return { index, type: typeof item };
+    }
+    const record = item;
+    return {
+      index,
+      type: record.type ?? record.role ?? "unknown",
+      ...typeof record.id === "string" ? { id: record.id } : {},
+      ...typeof record.call_id === "string" ? { callId: record.call_id } : {},
+      ...typeof record.execution === "string" ? { execution: record.execution } : {},
+      ...typeof record.status === "string" ? { status: record.status } : {},
+      ...record.type === "reasoning" ? { hasEncryptedContent: typeof record.encrypted_content === "string" } : {}
+    };
+  });
+}
+function summarizeDiagnosticOutput(output) {
+  return summarizeDiagnosticItems(output);
+}
+function sanitizeDiagnosticFileComponent(value) {
+  return value.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 160) || "unknown";
+}
+async function loadDiagnosticLogModules() {
+  if (typeof process === "undefined" || process.versions?.node == null) {
+    return void 0;
+  }
+  diagnosticLogModulesPromise ??= Promise.all([
+    import("fs/promises"),
+    import("path")
+  ]).then(([fs, path]) => ({
+    appendFile: fs.appendFile,
+    mkdir: fs.mkdir,
+    join: path.join
+  })).catch(() => void 0);
+  return diagnosticLogModulesPromise;
+}
+async function getDiagnosticLog({
+  provider,
+  modelId,
+  sessionKey
+}) {
+  if (process.env.OPENAI_TOOL_SEARCH_COMPAT_DEBUG_FILE === "0") {
+    return void 0;
+  }
+  const modules = await loadDiagnosticLogModules();
+  const home = process.env.HOME ?? process.env.USERPROFILE;
+  if (modules == null || home == null) {
+    return void 0;
+  }
+  const providerModelKey = `${provider}\0${modelId}`;
+  let normalizedSessionKey = sessionKey?.trim();
+  if (normalizedSessionKey == null || normalizedSessionKey.length === 0) {
+    normalizedSessionKey = diagnosticFallbackSessionKeys.get(providerModelKey);
+    if (normalizedSessionKey == null) {
+      normalizedSessionKey = `run_${generateId2()}`;
+      diagnosticFallbackSessionKeys.set(providerModelKey, normalizedSessionKey);
+    }
+  }
+  const key = `${provider}\0${normalizedSessionKey}`;
+  const existing = diagnosticLogs.get(key);
+  if (existing != null) {
+    return existing;
+  }
+  const fileName = `${sanitizeDiagnosticFileComponent(normalizedSessionKey)}.jsonl`;
+  const providerDirectory = sanitizeDiagnosticFileComponent(
+    provider.endsWith(".responses") ? provider.slice(0, -".responses".length) : provider
+  );
+  const directory = modules.join(
+    home,
+    ".local",
+    "share",
+    "opencode",
+    "provider-debug",
+    providerDirectory
+  );
+  const log = {
+    filePath: modules.join(directory, fileName),
+    directory,
+    provider,
+    modelId,
+    sessionKey: normalizedSessionKey,
+    requestCount: 0,
+    hiddenRoundCount: 0,
+    writeQueue: Promise.resolve(),
+    modules
+  };
+  diagnosticLogs.set(key, log);
+  return log;
+}
+function appendDiagnosticLog(log, event) {
+  if (log == null) {
+    return Promise.resolve();
+  }
+  const line = `${JSON.stringify({
+    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+    provider: log.provider,
+    modelId: log.modelId,
+    sessionKey: log.sessionKey,
+    ...event
+  })}
+`;
+  const write = log.writeQueue.then(async () => {
+    await log.modules.mkdir(log.directory, { recursive: true });
+    await log.modules.appendFile(log.filePath, line, "utf8");
+  });
+  log.writeQueue = write.catch(() => void 0);
+  return write.catch(() => void 0);
 }
 function toolSearchOutput(call) {
   return {
@@ -5974,6 +6075,11 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
         schema: openaiLanguageModelResponsesOptionsSchema
       });
     }
+    const diagnosticLog = await getDiagnosticLog({
+      provider: this.config.provider,
+      modelId: this.modelId,
+      sessionKey: typeof openaiOptions?.promptCacheKey === "string" ? openaiOptions.promptCacheKey : void 0
+    });
     const resolvedReasoningEffort = openaiOptions?.reasoningEffort ?? (isCustomReasoning2(reasoning) ? reasoning : void 0);
     const resolvedReasoningSummary = openaiOptions?.reasoningSummary !== void 0 ? openaiOptions.reasoningSummary : resolvedReasoningEffort != null && resolvedReasoningEffort !== "none" ? "detailed" : void 0;
     const isReasoningModel = openaiOptions?.forceReasoning ?? modelCapabilities.isReasoningModel;
@@ -6216,7 +6322,8 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
       toolNameMapping,
       providerOptionsName,
       isShellProviderExecuted,
-      convertPromptToInput
+      convertPromptToInput,
+      diagnosticLog
     };
   }
   async doGenerate(options) {
@@ -6227,7 +6334,8 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
       toolNameMapping,
       providerOptionsName,
       isShellProviderExecuted,
-      convertPromptToInput
+      convertPromptToInput,
+      diagnosticLog
     } = await this.getArgs(options);
     let requestBody = body;
     const url = this.config.url({
@@ -6241,25 +6349,60 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
     const accumulatedVisibleOutput = [];
     const request = ++codexToolSearchRequestSequence;
     for (let round = 0; round < MAX_CODEX_TOOL_SEARCH_ROUNDS; round++) {
+      if (diagnosticLog != null) {
+        diagnosticLog.requestCount += 1;
+        if (round > 0) {
+          diagnosticLog.hiddenRoundCount += 1;
+        }
+      }
+      await appendDiagnosticLog(diagnosticLog, {
+        event: "request_start",
+        request,
+        round,
+        store: requestBody.store,
+        promptCacheKey: requestBody.prompt_cache_key,
+        inputItems: summarizeDiagnosticItems(
+          Array.isArray(requestBody.input) ? requestBody.input : []
+        )
+      });
       logCodexToolSearchRequest({
         request,
         round,
         requestBody
       });
-      const result = await postJsonToApi5({
-        url,
-        headers: combineHeaders5(this.config.headers?.(), options.headers),
-        body: requestBody,
-        failedResponseHandler: openaiFailedResponseHandler,
-        successfulResponseHandler: createJsonResponseHandler5(
-          openaiResponsesResponseSchema
-        ),
-        abortSignal: options.abortSignal,
-        fetch: this.config.fetch
-      });
+      let result;
+      try {
+        result = await postJsonToApi5({
+          url,
+          headers: combineHeaders5(this.config.headers?.(), options.headers),
+          body: requestBody,
+          failedResponseHandler: openaiFailedResponseHandler,
+          successfulResponseHandler: createJsonResponseHandler5(
+            openaiResponsesResponseSchema
+          ),
+          abortSignal: options.abortSignal,
+          fetch: this.config.fetch
+        });
+      } catch (error) {
+        await appendDiagnosticLog(diagnosticLog, {
+          event: "request_error",
+          request,
+          round,
+          error: error instanceof Error ? { name: error.name, message: error.message } : String(error)
+        });
+        throw error;
+      }
       responseHeaders = result.responseHeaders;
       response = result.value;
       rawResponse = result.rawValue;
+      await appendDiagnosticLog(diagnosticLog, {
+        event: "response",
+        request,
+        round,
+        responseId: response.id,
+        outputItems: summarizeDiagnosticOutput(response.output ?? []),
+        error: response.error?.message
+      });
       if (response.error) {
         throw new APICallError2({
           message: response.error.message,
@@ -6845,6 +6988,26 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
         ...response.reasoning?.context != null ? { reasoningContext: response.reasoning.context } : {}
       }
     };
+    if (diagnosticLog != null) {
+      const debugMetadata = {
+        requestCount: diagnosticLog.requestCount,
+        hiddenRoundCount: diagnosticLog.hiddenRoundCount
+      };
+      const debugProviderMetadata = {
+        debug: debugMetadata
+      };
+      providerMetadata[TOOL_SEARCH_COMPAT_PROVIDER_METADATA] = debugProviderMetadata;
+      if (content.length > 0) {
+        const firstContent = content[0];
+        content[0] = {
+          ...firstContent,
+          providerMetadata: {
+            ...firstContent.providerMetadata,
+            [TOOL_SEARCH_COMPAT_PROVIDER_METADATA]: debugProviderMetadata
+          }
+        };
+      }
+    }
     const usage = response.usage;
     return {
       content,

@@ -198,6 +198,22 @@ verify the request body at the proxy boundary and check:
 - whether OpenCode is loading this fork's `dist/index.js` rather than stock
   `@ai-sdk/openai`.
 
+The branching variant also writes a real-time JSONL diagnostic log to:
+
+```text
+~/.local/share/opencode/provider-debug/<provider>/<session-id>.jsonl
+```
+
+With `setCacheKey: true`, `<session-id>` is the OpenCode session ID, so the
+log path is deterministic. The log records request start, response output item
+types, and request errors without prompt text, tool arguments, or encrypted
+content. A completed result adds a compact `toolSearchCompat` debug summary to
+provider metadata; OpenCode persists that metadata on the returned content part
+in SQLite. The custom metadata namespace is ignored by the request serializer
+and is not sent to OpenAI.
+
+Set `OPENAI_TOOL_SEARCH_COMPAT_DEBUG_FILE=0` to disable the JSONL file.
+
 ## Build and Verify
 
 Node.js 22 or newer is required.

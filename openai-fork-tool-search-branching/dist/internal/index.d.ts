@@ -4,6 +4,8 @@ import * as _ai_sdk_provider_utils from '@ai-sdk/provider-utils';
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE, FetchFunction } from '@ai-sdk/provider-utils';
 import { c as OpenAIChatModelId, d as OpenAICompletionModelId, e as OpenAIEmbeddingModelId, i as OpenAIConfig, f as OpenAIImageModelId, r as OpenAITranscriptionModelOptions, g as OpenAITranscriptionModelId, h as OpenAISpeechModelId, b as OpenAIResponsesModelId, y as OpenAIResponsesTool, z as OpenAIResponsesIncludeOptions, B as OpenAIResponsesInput, O as OpenAIResponsesFileSearchToolComparisonFilter, a as OpenAIResponsesFileSearchToolCompoundFilter } from '../openai-responses-provider-metadata-C1tCYWSW.js';
 export { A as ApplyPatchOperation, k as OpenAIEmbeddingModelOptions, l as OpenAIImageModelEditOptions, m as OpenAIImageModelGenerationOptions, n as OpenAIImageModelOptions, j as OpenAILanguageModelChatOptions, o as OpenAILanguageModelCompletionOptions, q as OpenAISpeechModelOptions, s as OpenaiResponsesCompactionProviderMetadata, t as OpenaiResponsesProviderMetadata, u as OpenaiResponsesReasoningProviderMetadata, v as OpenaiResponsesSourceDocumentProviderMetadata, x as OpenaiResponsesTextProviderMetadata, R as ResponsesCompactionProviderMetadata, C as ResponsesProviderMetadata, D as ResponsesReasoningProviderMetadata, E as ResponsesSourceDocumentProviderMetadata, F as ResponsesTextProviderMetadata, G as applyPatch, H as applyPatchArgsSchema, I as applyPatchInputSchema, J as applyPatchOutputSchema, K as applyPatchToolFactory, L as getMaxImagesPerCall, M as hasDefaultResponseFormat, N as modelMaxImagesPerCall, P as openAITranscriptionModelOptions, Q as openaiEmbeddingModelOptions, S as openaiImageModelEditOptions, T as openaiImageModelGenerationOptions, U as openaiImageModelOptions, V as openaiLanguageModelChatOptions, W as openaiLanguageModelCompletionOptions, X as openaiSpeechModelOptionsSchema, Y as webSearch, Z as webSearchArgsSchema, _ as webSearchOutputSchema, w as webSearchToolFactory } from '../openai-responses-provider-metadata-C1tCYWSW.js';
+import * as node_path from 'node:path';
+import * as node_fs_promises from 'node:fs/promises';
 import 'zod/v4';
 
 type OpenAIChatConfig = {
@@ -166,6 +168,22 @@ declare class OpenAISpeechModel implements SpeechModelV4 {
     doGenerate(options: Parameters<SpeechModelV4['doGenerate']>[0]): Promise<Awaited<ReturnType<SpeechModelV4['doGenerate']>>>;
 }
 
+type DiagnosticLogModules = {
+    appendFile: typeof node_fs_promises['appendFile'];
+    mkdir: typeof node_fs_promises['mkdir'];
+    join: typeof node_path['join'];
+};
+type DiagnosticLog = {
+    filePath: string;
+    directory: string;
+    provider: string;
+    modelId: string;
+    sessionKey: string;
+    requestCount: number;
+    hiddenRoundCount: number;
+    writeQueue: Promise<void>;
+    modules: DiagnosticLogModules;
+};
 declare class OpenAIResponsesLanguageModel implements LanguageModelV4 {
     readonly specificationVersion = "v4";
     readonly modelId: OpenAIResponsesModelId;
@@ -277,6 +295,7 @@ declare class OpenAIResponsesLanguageModel implements LanguageModelV4 {
             input: OpenAIResponsesInput;
             warnings: Array<SharedV4Warning>;
         }>;
+        diagnosticLog: DiagnosticLog | undefined;
     }>;
     doGenerate(options: LanguageModelV4CallOptions): Promise<LanguageModelV4GenerateResult>;
     doStream(options: LanguageModelV4CallOptions): Promise<LanguageModelV4StreamResult>;

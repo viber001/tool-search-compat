@@ -88,6 +88,13 @@ A tool_search_call(C) B function_call(E)
 A B function_call(E) function_call_output(E)
 ```
 
+The variant writes compact real-time diagnostics to
+`~/.local/share/opencode/provider-debug/<provider>/<session-id>.jsonl`.
+When `setCacheKey: true` is enabled, the basename is the OpenCode session ID.
+After a normal provider completion, a small `toolSearchCompat` summary is also
+attached to provider metadata and persisted with the OpenCode content part in
+SQLite; it is not serialized into the OpenAI request body.
+
 When a response contains both a pending tool-search call and an ordinary function call, this variant
 returns A/B and the function call directly to OpenCode. It does not send the base fork's hidden
 `tool_search_call + tool_search_output` request. Pure pending tool-search responses still use the hidden

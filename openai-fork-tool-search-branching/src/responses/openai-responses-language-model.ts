@@ -82,6 +82,29 @@ import { prepareResponsesTools } from './openai-responses-prepare-tools';
 
 const MAX_CODEX_TOOL_SEARCH_ROUNDS = 3;
 let codexToolSearchRequestSequence = 0;
+const TOOL_SEARCH_COMPAT_PROVIDER_METADATA = 'toolSearchCompat';
+
+type DiagnosticLogModules = {
+  appendFile: typeof import('node:fs/promises')['appendFile'];
+  mkdir: typeof import('node:fs/promises')['mkdir'];
+  join: typeof import('node:path')['join'];
+};
+
+type DiagnosticLog = {
+  filePath: string;
+  directory: string;
+  provider: string;
+  modelId: string;
+  sessionKey: string;
+  requestCount: number;
+  hiddenRoundCount: number;
+  writeQueue: Promise<void>;
+  modules: DiagnosticLogModules;
+};
+
+let diagnosticLogModulesPromise: Promise<DiagnosticLogModules | undefined> | undefined;
+const diagnosticLogs = new Map<string, DiagnosticLog>();
+const diagnosticFallbackSessionKeys = new Map<string, string>();
 
 type OpenAIResponsesOutput = NonNullable<
   InferSchema<typeof openaiResponsesResponseSchema>['output']
@@ -106,7 +129,22 @@ function logCodexToolSearchRequest({
   }
 
   const input = Array.isArray(requestBody.input) ? requestBody.input : [];
-  const inputItems = input.map((item, index) => {
+  const inputItems = summarizeDiagnosticItems(input);
+
+  console.error(
+    'OPENAI TOOL SEARCH COMPAT REQUEST',
+    JSON.stringify({
+      request,
+      round,
+      store: requestBody.store,
+      previousResponseId: requestBody.previous_response_id,
+      inputItems,
+    }),
+  );
+}
+
+function summarizeDiagnosticItems(items: unknown[]) {
+  return items.map((item, index) => {
     if (item == null || typeof item !== 'object') {
       return { index, type: typeof item };
     }
@@ -119,22 +157,134 @@ function logCodexToolSearchRequest({
       ...(typeof record.call_id === 'string'
         ? { callId: record.call_id }
         : {}),
+      ...(typeof record.execution === 'string'
+        ? { execution: record.execution }
+        : {}),
+      ...(typeof record.status === 'string'
+        ? { status: record.status }
+        : {}),
       ...(record.type === 'reasoning'
         ? { hasEncryptedContent: typeof record.encrypted_content === 'string' }
         : {}),
     };
   });
+}
 
-  console.error(
-    'OPENAI TOOL SEARCH COMPAT REQUEST',
-    JSON.stringify({
-      request,
-      round,
-      store: requestBody.store,
-      previousResponseId: requestBody.previous_response_id,
-      inputItems,
-    }),
+function summarizeDiagnosticOutput(output: OpenAIResponsesOutput) {
+  return summarizeDiagnosticItems(output);
+}
+
+function sanitizeDiagnosticFileComponent(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 160) || 'unknown';
+}
+
+async function loadDiagnosticLogModules(): Promise<DiagnosticLogModules | undefined> {
+  if (
+    typeof process === 'undefined' ||
+    process.versions?.node == null
+  ) {
+    return undefined;
+  }
+
+  diagnosticLogModulesPromise ??= Promise.all([
+    import('node:fs/promises'),
+    import('node:path'),
+  ])
+    .then(([fs, path]) => ({
+      appendFile: fs.appendFile,
+      mkdir: fs.mkdir,
+      join: path.join,
+    }))
+    .catch(() => undefined);
+
+  return diagnosticLogModulesPromise;
+}
+
+async function getDiagnosticLog({
+  provider,
+  modelId,
+  sessionKey,
+}: {
+  provider: string;
+  modelId: string;
+  sessionKey?: string;
+}): Promise<DiagnosticLog | undefined> {
+  if (process.env.OPENAI_TOOL_SEARCH_COMPAT_DEBUG_FILE === '0') {
+    return undefined;
+  }
+
+  const modules = await loadDiagnosticLogModules();
+  const home = process.env.HOME ?? process.env.USERPROFILE;
+  if (modules == null || home == null) {
+    return undefined;
+  }
+
+  const providerModelKey = `${provider}\0${modelId}`;
+  let normalizedSessionKey = sessionKey?.trim();
+  if (normalizedSessionKey == null || normalizedSessionKey.length === 0) {
+    normalizedSessionKey = diagnosticFallbackSessionKeys.get(providerModelKey);
+    if (normalizedSessionKey == null) {
+      normalizedSessionKey = `run_${generateId()}`;
+      diagnosticFallbackSessionKeys.set(providerModelKey, normalizedSessionKey);
+    }
+  }
+
+  const key = `${provider}\0${normalizedSessionKey}`;
+  const existing = diagnosticLogs.get(key);
+  if (existing != null) {
+    return existing;
+  }
+
+  const fileName = `${sanitizeDiagnosticFileComponent(normalizedSessionKey)}.jsonl`;
+  const providerDirectory = sanitizeDiagnosticFileComponent(
+    provider.endsWith('.responses')
+      ? provider.slice(0, -'.responses'.length)
+      : provider,
   );
+  const directory = modules.join(
+    home,
+    '.local',
+    'share',
+    'opencode',
+    'provider-debug',
+    providerDirectory,
+  );
+  const log: DiagnosticLog = {
+    filePath: modules.join(directory, fileName),
+    directory,
+    provider,
+    modelId,
+    sessionKey: normalizedSessionKey,
+    requestCount: 0,
+    hiddenRoundCount: 0,
+    writeQueue: Promise.resolve(),
+    modules,
+  };
+  diagnosticLogs.set(key, log);
+  return log;
+}
+
+function appendDiagnosticLog(
+  log: DiagnosticLog | undefined,
+  event: Record<string, unknown>,
+): Promise<void> {
+  if (log == null) {
+    return Promise.resolve();
+  }
+
+  const line = `${JSON.stringify({
+    timestamp: new Date().toISOString(),
+    provider: log.provider,
+    modelId: log.modelId,
+    sessionKey: log.sessionKey,
+    ...event,
+  })}\n`;
+  const write = log.writeQueue.then(async () => {
+    await log.modules.mkdir(log.directory, { recursive: true });
+    await log.modules.appendFile(log.filePath, line, 'utf8');
+  });
+  log.writeQueue = write.catch(() => undefined);
+  return write.catch(() => undefined);
 }
 
 function toolSearchOutput(
@@ -495,6 +645,15 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
       });
     }
 
+    const diagnosticLog = await getDiagnosticLog({
+      provider: this.config.provider,
+      modelId: this.modelId,
+      sessionKey:
+        typeof openaiOptions?.promptCacheKey === 'string'
+          ? openaiOptions.promptCacheKey
+          : undefined,
+    });
+
     const resolvedReasoningEffort =
       openaiOptions?.reasoningEffort ??
       (isCustomReasoning(reasoning) ? reasoning : undefined);
@@ -850,6 +1009,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
       providerOptionsName,
       isShellProviderExecuted,
       convertPromptToInput,
+      diagnosticLog,
     };
   }
 
@@ -864,6 +1024,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
       providerOptionsName,
       isShellProviderExecuted,
       convertPromptToInput,
+      diagnosticLog,
     } = await this.getArgs(options);
     let requestBody = body;
     const url = this.config.url({
@@ -881,26 +1042,65 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
     const request = ++codexToolSearchRequestSequence;
 
     for (let round = 0; round < MAX_CODEX_TOOL_SEARCH_ROUNDS; round++) {
+      if (diagnosticLog != null) {
+        diagnosticLog.requestCount += 1;
+        if (round > 0) {
+          diagnosticLog.hiddenRoundCount += 1;
+        }
+      }
+      await appendDiagnosticLog(diagnosticLog, {
+        event: 'request_start',
+        request,
+        round,
+        store: requestBody.store,
+        promptCacheKey: requestBody.prompt_cache_key,
+        inputItems: summarizeDiagnosticItems(
+          Array.isArray(requestBody.input) ? requestBody.input : [],
+        ),
+      });
       logCodexToolSearchRequest({
         request,
         round,
         requestBody,
       });
-      const result = await postJsonToApi({
-        url,
-        headers: combineHeaders(this.config.headers?.(), options.headers),
-        body: requestBody,
-        failedResponseHandler: openaiFailedResponseHandler,
-        successfulResponseHandler: createJsonResponseHandler(
-          openaiResponsesResponseSchema,
-        ),
-        abortSignal: options.abortSignal,
-        fetch: this.config.fetch,
-      });
+      let result;
+      try {
+        result = await postJsonToApi({
+          url,
+          headers: combineHeaders(this.config.headers?.(), options.headers),
+          body: requestBody,
+          failedResponseHandler: openaiFailedResponseHandler,
+          successfulResponseHandler: createJsonResponseHandler(
+            openaiResponsesResponseSchema,
+          ),
+          abortSignal: options.abortSignal,
+          fetch: this.config.fetch,
+        });
+      } catch (error) {
+        await appendDiagnosticLog(diagnosticLog, {
+          event: 'request_error',
+          request,
+          round,
+          error:
+            error instanceof Error
+              ? { name: error.name, message: error.message }
+              : String(error),
+        });
+        throw error;
+      }
 
       responseHeaders = result.responseHeaders;
       response = result.value;
       rawResponse = result.rawValue;
+
+      await appendDiagnosticLog(diagnosticLog, {
+        event: 'response',
+        request,
+        round,
+        responseId: response.id,
+        outputItems: summarizeDiagnosticOutput(response.output ?? []),
+        error: response.error?.message,
+      });
 
       if (response.error) {
         throw new APICallError({
@@ -1601,6 +1801,31 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
           : {}),
       } satisfies ResponsesProviderMetadata,
     };
+
+    if (diagnosticLog != null) {
+      const debugMetadata: Record<string, JSONValue> = {
+        requestCount: diagnosticLog.requestCount,
+        hiddenRoundCount: diagnosticLog.hiddenRoundCount,
+      };
+      const debugProviderMetadata = {
+        debug: debugMetadata,
+      };
+      providerMetadata[TOOL_SEARCH_COMPAT_PROVIDER_METADATA] =
+        debugProviderMetadata;
+
+      if (content.length > 0) {
+        const firstContent = content[0] as LanguageModelV4Content & {
+          providerMetadata?: SharedV4ProviderMetadata;
+        };
+        content[0] = {
+          ...firstContent,
+          providerMetadata: {
+            ...firstContent.providerMetadata,
+            [TOOL_SEARCH_COMPAT_PROVIDER_METADATA]: debugProviderMetadata,
+          },
+        } as LanguageModelV4Content;
+      }
+    }
 
     const usage = response.usage!; // defined when there is no error
 
