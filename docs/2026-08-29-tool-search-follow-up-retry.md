@@ -5,8 +5,8 @@
 Codex/OpenAI Responses 兼容层收到未配对的 `tool_search_call` 后，可能在同一次 provider 调用中发送内部 follow-up 请求。
 这些请求不能把 timeout、HTTP 错误或网络错误伪装成 `tool_search_output(status=completed, tools=[])` 成功结果。
 
-本次修改首先应用于 `openai-fork-tool-search-branching`。
-`openai-fork` 使用相同 helper 和测试策略，在独立源码 commit 中同步。
+本次修改首先应用于 `openai-fork-tool-search-branching`，随后在独立源码 commit 中同步到 `openai-fork`。
+两个 fork 使用相同 helper、HTTP retry 边界和真实 HTTP 测试矩阵；各自原有的 mixed tool-search 行为保持不变。
 
 ## OpenCode 1.18.25 的真实策略
 
@@ -101,6 +101,9 @@ branching JSONL 中：
 follow-up 最终失败时不会写 `response` 事件。
 最后一个 `request_error` 后会把相同 error 抛给 OpenCode。
 
+base fork 保留原有 console diagnostic，并增加同样从 `0` 开始的 `attempt` 字段。
+两个 fork 都不会在失败路径写入成功响应或返回 provider result。
+
 ## 测试
 
 源码测试使用真实本地 HTTP server 和 provider `doGenerate()`，而不是只调用 retry helper。
@@ -108,6 +111,9 @@ follow-up 最终失败时不会写 `response` 事件。
 
 ```bash
 cd openai-fork-tool-search-branching
+npm run test:tool-search-retry
+
+cd ../openai-fork
 npm run test:tool-search-retry
 ```
 

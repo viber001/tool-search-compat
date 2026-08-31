@@ -1,5 +1,6 @@
 openai-fork/node_modules/
 openai-fork/*.tsbuildinfo
+openai-fork/.test-dist/
 openai-fork-tool-search-branching/node_modules
 openai-fork-tool-search-branching/*.tsbuildinfo
 openai-fork-tool-search-branching/.test-dist/

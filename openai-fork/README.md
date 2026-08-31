@@ -77,6 +77,28 @@ This also handles compatible endpoints that mark an unresolved call as
 provider-executed tool. Server calls that already have a matching output, and
 explicitly configured `openai.tools.toolSearch()`, remain on the upstream path.
 
+### TSC Follow-Up Retry
+
+The original request keeps AI SDK retries disabled and remains under OpenCode's
+outer session retry policy. Internal `tool_search_call` follow-up HTTP requests
+use the retry classification, five-retry limit, exponential backoff, jitter, and
+`Retry-After` handling from OpenCode 1.18.25.
+
+Transient timeout, network, `429`, and `5xx` failures can therefore retry inside
+the current hidden compatibility round. Authentication errors, insufficient
+quota, invalid prompts or requests, context overflow, and user aborts are thrown
+without hidden retry. If hidden retries are exhausted, the final upstream error
+is rethrown to OpenCode. The fork never converts a failed follow-up into a
+successful empty tool catalog.
+
+`MAX_CODEX_TOOL_SEARCH_ROUNDS` still limits protocol rounds only. HTTP retry uses
+a separate counter, and all follow-up state remains local to one provider call.
+If OpenCode retries the original request, the provider starts again before the
+failed `tool_search_call` and can execute it again.
+
+See `../docs/2026-08-29-tool-search-follow-up-retry.md` for the exact OpenCode
+source references, retry boundaries, and test matrix.
+
 ### Reasoning Replay Safety
 
 Reasoning models always request `reasoning.encrypted_content`. During the hidden
@@ -153,6 +175,7 @@ The fork-specific source changes are concentrated in:
 
 - `src/responses/convert-to-openai-responses-input.ts`
 - `src/responses/openai-responses-language-model.ts`
+- `src/responses/openai-responses-retry.ts`
 - `src/responses/openai-responses-prepare-tools.ts`
 
 Do not describe the fork as fully behavior-identical to stock
@@ -169,7 +192,8 @@ summary of each compatibility request round:
 OPENAI_TOOL_SEARCH_COMPAT_DEBUG=1
 ```
 
-The log includes the compatibility request number, round, `store`,
+The log includes the compatibility request number, round, HTTP retry attempt,
+`store`,
 `previous_response_id`, and input item types/IDs. It intentionally does not log
 full prompts or tool arguments.
 
@@ -191,6 +215,7 @@ Node.js 22 or newer is required.
 cd ~/.config/opencode/tool-search-compat/openai-fork
 npm install --ignore-scripts
 npx tsc --noEmit -p tsconfig.build.json
+npm run test:tool-search-retry
 npx tsup src/index.ts src/internal/index.ts --format esm --dts --out-dir dist \
   --tsconfig tsconfig.build.json \
   --external @ai-sdk/provider --external @ai-sdk/provider-utils --external zod \

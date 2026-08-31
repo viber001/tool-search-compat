@@ -60,6 +60,10 @@ import {
 import { convertToOpenAIResponsesInput } from './convert-to-openai-responses-input';
 import { mapOpenAIResponseFinishReason } from './map-openai-responses-finish-reason';
 import {
+  OPEN_CODE_RETRY_MAX_RETRIES,
+  retryWithOpenCodePolicy,
+} from './openai-responses-retry';
+import {
   openaiResponsesChunkSchema,
   openaiResponsesResponseSchema,
   type OpenAIResponsesChunk,
@@ -95,10 +99,12 @@ type AssistantPromptContent = Extract<
 function logCodexToolSearchRequest({
   request,
   round,
+  attempt,
   requestBody,
 }: {
   request: number;
   round: number;
+  attempt: number;
   requestBody: Record<string, unknown>;
 }) {
   if (process.env.OPENAI_TOOL_SEARCH_COMPAT_DEBUG !== '1') {
@@ -130,6 +136,7 @@ function logCodexToolSearchRequest({
     JSON.stringify({
       request,
       round,
+      attempt,
       store: requestBody.store,
       previousResponseId: requestBody.previous_response_id,
       inputItems,
@@ -889,21 +896,28 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
     const request = ++codexToolSearchRequestSequence;
 
     for (let round = 0; round < MAX_CODEX_TOOL_SEARCH_ROUNDS; round++) {
-      logCodexToolSearchRequest({
-        request,
-        round,
-        requestBody,
-      });
-      const result = await postJsonToApi({
-        url,
-        headers: combineHeaders(this.config.headers?.(), options.headers),
-        body: requestBody,
-        failedResponseHandler: openaiFailedResponseHandler,
-        successfulResponseHandler: createJsonResponseHandler(
-          openaiResponsesResponseSchema,
-        ),
+      const result = await retryWithOpenCodePolicy({
+        maxRetries: round === 0 ? 0 : OPEN_CODE_RETRY_MAX_RETRIES,
         abortSignal: options.abortSignal,
-        fetch: this.config.fetch,
+        execute: attempt => {
+          logCodexToolSearchRequest({
+            request,
+            round,
+            attempt,
+            requestBody,
+          });
+          return postJsonToApi({
+            url,
+            headers: combineHeaders(this.config.headers?.(), options.headers),
+            body: requestBody,
+            failedResponseHandler: openaiFailedResponseHandler,
+            successfulResponseHandler: createJsonResponseHandler(
+              openaiResponsesResponseSchema,
+            ),
+            abortSignal: options.abortSignal,
+            fetch: this.config.fetch,
+          });
+        },
       });
 
       responseHeaders = result.responseHeaders;
