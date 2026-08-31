@@ -47,6 +47,9 @@
   "peerDependencies": {
     "zod": "^3.25.76 || ^4.1.8"
   },
+  "overrides": {
+    "esbuild": "0.28.1"
+  },
   "engines": {
     "node": ">=22"
   },
