@@ -2682,7 +2682,7 @@ var programmaticToolCalling = () => experimental_toolCaller(programmaticToolCall
 
 // src/responses/openai-responses-language-model.ts
 import {
-  APICallError as APICallError2
+  APICallError as APICallError3
 } from "@ai-sdk/provider";
 import {
   combineHeaders as combineHeaders5,
@@ -3947,6 +3947,224 @@ function mapOpenAIResponseFinishReason({
       return "content-filter";
     default:
       return hasFunctionCall ? "tool-calls" : "other";
+  }
+}
+
+// src/responses/openai-responses-retry.ts
+import { APICallError as APICallError2 } from "@ai-sdk/provider";
+var OPEN_CODE_RETRY_INITIAL_DELAY = 2e3;
+var OPEN_CODE_RETRY_BACKOFF_FACTOR = 2;
+var OPEN_CODE_RETRY_JITTER_FACTOR = 0.25;
+var OPEN_CODE_RETRY_MAX_DELAY_NO_HEADERS = 3e4;
+var OPEN_CODE_RETRY_MAX_DELAY = 2147483647;
+var OPEN_CODE_RETRY_MAX_RETRIES = 5;
+var RETRYABLE_MESSAGE_PATTERNS = [
+  /429|500|502|503|504|524/i,
+  /rate increased too quickly|rate limit|rate-limit|rate_limit|too many requests/i,
+  /overloaded|service unavailable|service_unavailable|service-unavailable|internal error|internal_error|internal server error|server error|server_error|server-error|provider returned error|provider_returned_error|provider-returned-error/i,
+  /terminated|fetch failed|failed to fetch|network[-_\s]error|upstream connect|connection error|connection refused|connection lost|socket connection was closed|socket hang up|reset before headers|getaddrinfo|enotfound|eai_again|econnrefused|econnreset|etimedout/i,
+  /^timeout$|\b(?:request|response|connection|network|stream|read) (?:timeout|timed out|time out)\b/i,
+  /try your request again|retry your request|resource exhausted|resource_exhausted/i,
+  /\btry again (?:later|in\b)|\b(?:currently|temporarily) at capacity\b/i
+];
+var CONTEXT_OVERFLOW_PATTERNS = [
+  /prompt is too long/i,
+  /request_too_large/i,
+  /input is too long for requested model/i,
+  /exceeds the context window/i,
+  /exceeds (?:the )?(?:model'?s )?maximum context length(?: of [\d,]+ tokens?|\s*\([\d,]+\))/i,
+  /input token count.*exceeds the maximum/i,
+  /tokens in request more than max tokens allowed/i,
+  /maximum prompt length is \d+/i,
+  /reduce the length of the messages/i,
+  /maximum context length is \d+ tokens/i,
+  /exceeds (?:the )?maximum allowed input length of [\d,]+ tokens?/i,
+  /input \(\d+ tokens\) is longer than the model'?s context length \(\d+ tokens\)/i,
+  /exceeds the limit of \d+/i,
+  /exceeds the available context size/i,
+  /greater than the context length/i,
+  /context window exceeds limit/i,
+  /exceeded model token limit/i,
+  /context[_ ]length[_ ]exceeded/i,
+  /request entity too large/i,
+  /context length is only \d+ tokens/i,
+  /input length.*exceeds.*context length/i,
+  /prompt too long; exceeded (?:max )?context length/i,
+  /too large for model with \d+ maximum context length/i,
+  /prompt has [\d,]+ tokens?, but the configured context size is [\d,]+ tokens?/i,
+  /model_context_window_exceeded/i,
+  /too many tokens/i,
+  /token limit exceeded/i
+];
+var CONTEXT_OVERFLOW_EXCLUSIONS = [
+  /^(throttling error|service unavailable):/i,
+  /rate limit/i,
+  /too many requests/i
+];
+var NON_RETRYABLE_PROVIDER_ERROR_CODES = /* @__PURE__ */ new Set([
+  "insufficient_quota",
+  "usage_not_included",
+  "invalid_prompt"
+]);
+function isAbortError(error) {
+  return error instanceof Error && error.name === "AbortError";
+}
+function getProviderErrorCode(error) {
+  const data = error.data;
+  for (const value of [data?.error?.code, data?.error?.type]) {
+    if (typeof value === "string") {
+      return value.toLowerCase();
+    }
+  }
+  if (error.responseBody != null) {
+    try {
+      const parsed = JSON.parse(error.responseBody);
+      for (const value of [parsed.error?.code, parsed.error?.type]) {
+        if (typeof value === "string") {
+          return value.toLowerCase();
+        }
+      }
+    } catch {
+      return void 0;
+    }
+  }
+  return void 0;
+}
+function matchesRetryableMessage(value) {
+  return typeof value === "string" && RETRYABLE_MESSAGE_PATTERNS.some((pattern) => pattern.test(value));
+}
+function isContextOverflow(message) {
+  return !CONTEXT_OVERFLOW_EXCLUSIONS.some((pattern) => pattern.test(message)) && (CONTEXT_OVERFLOW_PATTERNS.some((pattern) => pattern.test(message)) || /^4(00|13)\s*(status code)?\s*\(no body\)/i.test(message));
+}
+function getErrorInfo(error) {
+  if (APICallError2.isInstance(error)) {
+    return {
+      message: error.message,
+      statusCode: error.statusCode,
+      isRetryable: error.isRetryable,
+      responseHeaders: error.responseHeaders,
+      responseBody: error.responseBody
+    };
+  }
+  if (!(error instanceof Error)) {
+    return void 0;
+  }
+  return { message: error.message };
+}
+function isOpenCodeRetryableError(error) {
+  if (isAbortError(error)) {
+    return false;
+  }
+  if (error instanceof Error && (error.name === "ProviderHeaderTimeoutError" || error.name === "ResponseStreamError")) {
+    return true;
+  }
+  const info = getErrorInfo(error);
+  if (info == null) {
+    return false;
+  }
+  if (isContextOverflow(info.message)) {
+    return false;
+  }
+  if (APICallError2.isInstance(error)) {
+    const providerErrorCode = getProviderErrorCode(error);
+    if (providerErrorCode != null && NON_RETRYABLE_PROVIDER_ERROR_CODES.has(providerErrorCode)) {
+      return false;
+    }
+    return Boolean(
+      info.isRetryable || info.statusCode != null && info.statusCode >= 500 || matchesRetryableMessage(info.message) || matchesRetryableMessage(info.responseBody)
+    );
+  }
+  const code = error.code;
+  if (code === "ECONNRESET" || code === "ZlibError") {
+    return true;
+  }
+  const lower = info.message.toLowerCase();
+  return lower.includes("too_many_requests") || lower.includes("exhausted") || lower.includes("unavailable") || matchesRetryableMessage(info.message);
+}
+function capRetryDelay(ms) {
+  return Math.min(ms, OPEN_CODE_RETRY_MAX_DELAY);
+}
+function exponentialRetryDelay(attempt, random) {
+  const base = OPEN_CODE_RETRY_INITIAL_DELAY * Math.pow(OPEN_CODE_RETRY_BACKOFF_FACTOR, attempt - 1);
+  return Math.ceil(base + base * OPEN_CODE_RETRY_JITTER_FACTOR * random);
+}
+function getOpenCodeRetryDelay(attempt, error, random = Math.random()) {
+  const headers = getErrorInfo(error)?.responseHeaders;
+  if (headers != null) {
+    const retryAfterMs = headers["retry-after-ms"];
+    if (retryAfterMs != null) {
+      const parsedMs = Number.parseFloat(retryAfterMs);
+      if (!Number.isNaN(parsedMs)) {
+        return capRetryDelay(parsedMs);
+      }
+    }
+    const retryAfter = headers["retry-after"];
+    if (retryAfter != null) {
+      const parsedSeconds = Number.parseFloat(retryAfter);
+      if (!Number.isNaN(parsedSeconds)) {
+        return capRetryDelay(Math.ceil(parsedSeconds * 1e3));
+      }
+      const parsedDate = Date.parse(retryAfter) - Date.now();
+      if (!Number.isNaN(parsedDate) && parsedDate > 0) {
+        return capRetryDelay(Math.ceil(parsedDate));
+      }
+    }
+    return capRetryDelay(exponentialRetryDelay(attempt, random));
+  }
+  return capRetryDelay(
+    Math.min(
+      exponentialRetryDelay(attempt, random),
+      OPEN_CODE_RETRY_MAX_DELAY_NO_HEADERS
+    )
+  );
+}
+function abortReason(signal) {
+  return signal.reason ?? new DOMException("Aborted", "AbortError");
+}
+async function sleepWithAbort(delayMs, abortSignal) {
+  if (abortSignal?.aborted) {
+    throw abortReason(abortSignal);
+  }
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(finish, delayMs);
+    function finish() {
+      abortSignal?.removeEventListener("abort", abort);
+      resolve();
+    }
+    function abort() {
+      clearTimeout(timeout);
+      reject(abortReason(abortSignal));
+    }
+    abortSignal?.addEventListener("abort", abort, { once: true });
+  });
+}
+async function retryWithOpenCodePolicy({
+  execute,
+  maxRetries = OPEN_CODE_RETRY_MAX_RETRIES,
+  abortSignal,
+  onError
+}) {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await execute(attempt);
+    } catch (error) {
+      const retryable = isOpenCodeRetryableError(error);
+      const willRetry = retryable && attempt < maxRetries;
+      const delayMs = willRetry ? getOpenCodeRetryDelay(attempt + 1, error) : void 0;
+      await onError?.({
+        error,
+        attempt,
+        retryable,
+        willRetry,
+        delayMs
+      });
+      if (!willRetry) {
+        throw error;
+      }
+      await sleepWithAbort(delayMs, abortSignal);
+      attempt += 1;
+    }
   }
 }
 
@@ -5690,6 +5908,7 @@ var codexToolSearchRequestSequence = 0;
 function logCodexToolSearchRequest({
   request,
   round,
+  attempt,
   requestBody
 }) {
   if (process.env.OPENAI_TOOL_SEARCH_COMPAT_DEBUG !== "1") {
@@ -5714,6 +5933,7 @@ function logCodexToolSearchRequest({
     JSON.stringify({
       request,
       round,
+      attempt,
       store: requestBody.store,
       previousResponseId: requestBody.previous_response_id,
       inputItems
@@ -6242,27 +6462,34 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
     const accumulatedVisibleOutput = [];
     const request = ++codexToolSearchRequestSequence;
     for (let round = 0; round < MAX_CODEX_TOOL_SEARCH_ROUNDS; round++) {
-      logCodexToolSearchRequest({
-        request,
-        round,
-        requestBody
-      });
-      const result = await postJsonToApi5({
-        url,
-        headers: combineHeaders5(this.config.headers?.(), options.headers),
-        body: requestBody,
-        failedResponseHandler: openaiFailedResponseHandler,
-        successfulResponseHandler: createJsonResponseHandler5(
-          openaiResponsesResponseSchema
-        ),
+      const result = await retryWithOpenCodePolicy({
+        maxRetries: round === 0 ? 0 : OPEN_CODE_RETRY_MAX_RETRIES,
         abortSignal: options.abortSignal,
-        fetch: this.config.fetch
+        execute: (attempt) => {
+          logCodexToolSearchRequest({
+            request,
+            round,
+            attempt,
+            requestBody
+          });
+          return postJsonToApi5({
+            url,
+            headers: combineHeaders5(this.config.headers?.(), options.headers),
+            body: requestBody,
+            failedResponseHandler: openaiFailedResponseHandler,
+            successfulResponseHandler: createJsonResponseHandler5(
+              openaiResponsesResponseSchema
+            ),
+            abortSignal: options.abortSignal,
+            fetch: this.config.fetch
+          });
+        }
       });
       responseHeaders = result.responseHeaders;
       response = result.value;
       rawResponse = result.rawValue;
       if (response.error) {
-        throw new APICallError2({
+        throw new APICallError3({
           message: response.error.message,
           url,
           requestBodyValues: requestBody,
@@ -6274,7 +6501,7 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
       }
       if (response.output == null) {
         const detail = response.incomplete_details?.reason;
-        throw new APICallError2({
+        throw new APICallError3({
           message: detail ? `Responses API returned no output (${detail})` : "Responses API returned no output",
           url,
           requestBodyValues: requestBody,
@@ -6331,7 +6558,7 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
         accumulatedVisibleOutput.push(...visibleOutput);
       }
       if (round === MAX_CODEX_TOOL_SEARCH_ROUNDS - 1) {
-        throw new APICallError2({
+        throw new APICallError3({
           message: "Responses API returned too many client-side tool_search_call items",
           url,
           requestBodyValues: requestBody,
@@ -6365,7 +6592,7 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
       };
     }
     if (response.output == null) {
-      throw new APICallError2({
+      throw new APICallError3({
         message: "Responses API returned no output",
         url,
         requestBodyValues: requestBody,
@@ -8045,7 +8272,7 @@ function createOpenAIResponsesChatCompletionsMismatchError({
   requestBodyValues,
   responseHeaders
 }) {
-  return new APICallError2({
+  return new APICallError3({
     message: "Received a Chat Completions stream while using the OpenAI Responses API. The default OpenAI provider model uses the Responses API. If your custom baseURL targets a Chat Completions-compatible endpoint, use openai.chat('model-id') or createOpenAI(...).chat('model-id') instead. You can also use @ai-sdk/openai-compatible for OpenAI-compatible providers.",
     url,
     requestBodyValues,
