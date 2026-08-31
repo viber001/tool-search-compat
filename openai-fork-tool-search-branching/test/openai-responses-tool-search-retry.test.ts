@@ -264,31 +264,36 @@ test('TSC follow-up retries HTTP 503 and honors Retry-After', async () => {
   }
 });
 
-test('TSC follow-up retries rate-limited HTTP 429', async () => {
-  const scenario = await runScenario({
-    steps: [
-      initialToolSearch,
-      response =>
-        sendJson(
-          response,
-          429,
-          errorBody({
-            message: 'Rate limit exceeded',
-            type: 'rate_limit_error',
-            code: 'rate_limit_exceeded',
-          }),
-          { 'retry-after-ms': '0' },
-        ),
-      successfulFollowUp,
-    ],
+for (const code of ['rate_limit', 'too_many_requests']) {
+  test(`TSC follow-up retries HTTP 429 ${code}`, async () => {
+    const scenario = await runScenario({
+      steps: [
+        initialToolSearch,
+        response =>
+          sendJson(
+            response,
+            429,
+            errorBody({
+              message:
+                code === 'rate_limit'
+                  ? 'Rate limit exceeded'
+                  : 'Too many requests',
+              type: code,
+              code,
+            }),
+            { 'retry-after-ms': '0' },
+          ),
+        successfulFollowUp,
+      ],
+    });
+    try {
+      assertSuccessfulResult(await scenario.call());
+      assert.equal(scenario.bodies.length, 3);
+    } finally {
+      await scenario.close();
+    }
   });
-  try {
-    assertSuccessfulResult(await scenario.call());
-    assert.equal(scenario.bodies.length, 3);
-  } finally {
-    await scenario.close();
-  }
-});
+}
 
 test('OpenCode Retry-After delay formats are preserved', () => {
   const retryAfterMs = new APICallError({
@@ -426,6 +431,47 @@ test('OpenCode retry of the original request re-executes TSC from clean state', 
     assert.deepEqual(scenario.bodies[0], scenario.bodies[2]);
     assertFollowUpInput(scenario.bodies[1]);
     assertFollowUpInput(scenario.bodies[3]);
+  } finally {
+    await scenario.close();
+  }
+});
+
+test('OpenCode retry re-executes TSC after hidden 503 retries are exhausted', async () => {
+  const failures = Array.from(
+    { length: OPEN_CODE_RETRY_MAX_RETRIES + 1 },
+    (): Step => response =>
+      sendJson(
+        response,
+        503,
+        errorBody({
+          message: 'Service unavailable',
+          type: 'server_error',
+          code: 'server_error',
+        }),
+        { 'retry-after-ms': '0' },
+      ),
+  );
+  const scenario = await runScenario({
+    steps: [
+      initialToolSearch,
+      ...failures,
+      initialToolSearch,
+      successfulFollowUp,
+    ],
+  });
+  try {
+    await assert.rejects(scenario.call(), error => {
+      assert(APICallError.isInstance(error));
+      assert.equal(error.statusCode, 503);
+      return true;
+    });
+    assertSuccessfulResult(await scenario.call());
+    assert.equal(scenario.bodies.length, 9);
+    assert.deepEqual(scenario.bodies[0], scenario.bodies[7]);
+    for (const body of scenario.bodies.slice(1, 7)) {
+      assertFollowUpInput(body);
+    }
+    assertFollowUpInput(scenario.bodies[8]);
   } finally {
     await scenario.close();
   }

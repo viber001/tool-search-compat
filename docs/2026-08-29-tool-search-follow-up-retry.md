@@ -122,13 +122,14 @@ npm run test:tool-search-retry
 1. TSC follow-up 正常成功；
 2. response-header timeout 后 retry 成功；
 3. HTTP `503` 后 retry 成功；
-4. HTTP `429 rate_limit_exceeded` 后 retry 成功；
+4. HTTP `429` 的 `rate_limit` 与 `too_many_requests` 分别 retry 成功；
 5. `Retry-After` 毫秒和秒格式；
 6. 五次 retry 耗尽后抛出原始 `503 APICallError`；
 7. `401` 不重试；
-8. `insufficient_quota` 不重试；
+8. HTTP `429 insufficient_quota` 不重试；
 9. invalid request `400` 不重试；
 10. 外层重新调用原始 request 时重新执行 TSC；
-11. 失败调用不返回 provider result；
-12. retry 使用相同 follow-up input，不提交跨调用状态；
-13. 原有 TSC 成功路径保持可用。
+11. hidden `503` 六次请求耗尽后抛错，外层重新调用原始 request 时 TSC 从头执行并成功；
+12. 失败调用不返回 provider result；
+13. retry 使用相同 follow-up input，不提交跨调用状态；
+14. 原有 TSC 成功路径保持可用。
