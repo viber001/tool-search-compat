@@ -72,6 +72,7 @@
     "clean": "del-cli dist docs *.tsbuildinfo",
     "type-check": "tsc --build",
     "test": "pnpm test:node && pnpm test:edge",
+    "test:tool-search-retry": "tsup test/openai-responses-tool-search-retry.test.ts --format esm --platform node --target node22 --out-dir .test-dist --clean --external @ai-sdk/provider --external @ai-sdk/provider-utils --external zod && node .test-dist/openai-responses-tool-search-retry.test.js",
     "test:update": "pnpm test:node -u",
     "test:watch": "vitest --config vitest.node.config.js",
     "test:edge": "vitest --config vitest.edge.config.js --run",

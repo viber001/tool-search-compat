@@ -55,6 +55,14 @@ a matching `tool_search_output` in the same response, the provider:
 4. Removes the internally completed `tool_search_call` and `tool_search_output`
    items from the final result returned to OpenCode.
 
+The first Responses request remains under OpenCode's normal retry ownership.
+Each internal follow-up HTTP request uses the retry classification, retry count,
+backoff, jitter, and `Retry-After` handling from OpenCode 1.18.25. Compatibility
+rounds and HTTP retries are separate counters. A follow-up that still fails
+after five retries throws the original error; it does not return an empty tool
+catalog as a successful provider result. OpenCode can then retry or abort the
+whole original model request using its normal policy.
+
 If the same response also contains an ordinary `function_call`, this variant
 does not send a hidden follow-up. It filters the pending `tool_search_call` from
 the provider result and immediately returns the assistant-visible output plus
@@ -168,6 +176,7 @@ The fork-specific source changes are concentrated in:
 
 - `src/responses/convert-to-openai-responses-input.ts`
 - `src/responses/openai-responses-language-model.ts`
+- `src/responses/openai-responses-retry.ts`
 - `src/responses/openai-responses-prepare-tools.ts`
 
 Do not describe the fork as fully behavior-identical to stock
@@ -184,8 +193,10 @@ summary of each compatibility request round:
 OPENAI_TOOL_SEARCH_COMPAT_DEBUG=1
 ```
 
-The log includes the compatibility request number, round, `store`,
-`previous_response_id`, and input item types/IDs. It intentionally does not log
+The log includes the compatibility request number, round, zero-based HTTP retry
+attempt, `store`, `previous_response_id`, and input item types/IDs. Retry errors
+also record whether OpenCode classifies the error as retryable, whether compat
+will retry it locally, and the selected delay. It intentionally does not log
 full prompts or tool arguments.
 
 If an endpoint reports that a `msg_*`, `rs_*`, or `tsc_*` item was not found,
@@ -222,6 +233,7 @@ Node.js 22 or newer is required.
 cd ~/.config/opencode/tool-search-compat/openai-fork-tool-search-branching
 npm install --ignore-scripts
 npx tsc --noEmit -p tsconfig.build.json
+npm run test:tool-search-retry
 npx tsup src/index.ts src/internal/index.ts --format esm --dts --out-dir dist \
   --tsconfig tsconfig.build.json \
   --external @ai-sdk/provider --external @ai-sdk/provider-utils --external zod \
@@ -232,6 +244,10 @@ npx tsup src/index.ts src/internal/index.ts --format esm --dts --out-dir dist \
 source changes. OpenCode configuration and provider modules are loaded at
 startup, so fully quit and restart OpenCode after changing the provider entry or
 rebuilding the fork.
+
+See `../docs/2026-08-29-tool-search-follow-up-retry.md` for the exact OpenCode
+policy copied into this package, error classification, state semantics, and
+integration-test matrix.
 
 See `../docs/2026-08-12-openai-fork-diff.md` for the detailed source comparison
 and `../docs/2026-08-12-node-bun-provider-entry.md` for the desktop provider-entry

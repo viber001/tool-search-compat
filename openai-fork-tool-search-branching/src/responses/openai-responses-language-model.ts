@@ -60,6 +60,10 @@ import {
 import { convertToOpenAIResponsesInput } from './convert-to-openai-responses-input';
 import { mapOpenAIResponseFinishReason } from './map-openai-responses-finish-reason';
 import {
+  OPEN_CODE_RETRY_MAX_RETRIES,
+  retryWithOpenCodePolicy,
+} from './openai-responses-retry';
+import {
   openaiResponsesChunkSchema,
   openaiResponsesResponseSchema,
   type OpenAIResponsesChunk,
@@ -118,10 +122,12 @@ type AssistantPromptContent = Extract<
 function logCodexToolSearchRequest({
   request,
   round,
+  attempt,
   requestBody,
 }: {
   request: number;
   round: number;
+  attempt: number;
   requestBody: Record<string, unknown>;
 }) {
   if (process.env.OPENAI_TOOL_SEARCH_COMPAT_DEBUG !== '1') {
@@ -136,6 +142,7 @@ function logCodexToolSearchRequest({
     JSON.stringify({
       request,
       round,
+      attempt,
       store: requestBody.store,
       previousResponseId: requestBody.previous_response_id,
       inputItems,
@@ -1042,52 +1049,61 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
     const request = ++codexToolSearchRequestSequence;
 
     for (let round = 0; round < MAX_CODEX_TOOL_SEARCH_ROUNDS; round++) {
-      if (diagnosticLog != null) {
-        diagnosticLog.requestCount += 1;
-        if (round > 0) {
-          diagnosticLog.hiddenRoundCount += 1;
-        }
+      if (round > 0 && diagnosticLog != null) {
+        diagnosticLog.hiddenRoundCount += 1;
       }
-      await appendDiagnosticLog(diagnosticLog, {
-        event: 'request_start',
-        request,
-        round,
-        store: requestBody.store,
-        promptCacheKey: requestBody.prompt_cache_key,
-        inputItems: summarizeDiagnosticItems(
-          Array.isArray(requestBody.input) ? requestBody.input : [],
-        ),
+      const result = await retryWithOpenCodePolicy({
+        maxRetries: round === 0 ? 0 : OPEN_CODE_RETRY_MAX_RETRIES,
+        abortSignal: options.abortSignal,
+        execute: async attempt => {
+          if (diagnosticLog != null) {
+            diagnosticLog.requestCount += 1;
+          }
+          await appendDiagnosticLog(diagnosticLog, {
+            event: 'request_start',
+            request,
+            round,
+            attempt,
+            store: requestBody.store,
+            promptCacheKey: requestBody.prompt_cache_key,
+            inputItems: summarizeDiagnosticItems(
+              Array.isArray(requestBody.input) ? requestBody.input : [],
+            ),
+          });
+          logCodexToolSearchRequest({
+            request,
+            round,
+            attempt,
+            requestBody,
+          });
+          return postJsonToApi({
+            url,
+            headers: combineHeaders(this.config.headers?.(), options.headers),
+            body: requestBody,
+            failedResponseHandler: openaiFailedResponseHandler,
+            successfulResponseHandler: createJsonResponseHandler(
+              openaiResponsesResponseSchema,
+            ),
+            abortSignal: options.abortSignal,
+            fetch: this.config.fetch,
+          });
+        },
+        onError: async ({ error, attempt, retryable, willRetry, delayMs }) => {
+          await appendDiagnosticLog(diagnosticLog, {
+            event: 'request_error',
+            request,
+            round,
+            attempt,
+            retryableByOpenCode: retryable,
+            willRetryInCompat: willRetry,
+            ...(delayMs != null ? { retryDelayMs: delayMs } : {}),
+            error:
+              error instanceof Error
+                ? { name: error.name, message: error.message }
+                : String(error),
+          });
+        },
       });
-      logCodexToolSearchRequest({
-        request,
-        round,
-        requestBody,
-      });
-      let result;
-      try {
-        result = await postJsonToApi({
-          url,
-          headers: combineHeaders(this.config.headers?.(), options.headers),
-          body: requestBody,
-          failedResponseHandler: openaiFailedResponseHandler,
-          successfulResponseHandler: createJsonResponseHandler(
-            openaiResponsesResponseSchema,
-          ),
-          abortSignal: options.abortSignal,
-          fetch: this.config.fetch,
-        });
-      } catch (error) {
-        await appendDiagnosticLog(diagnosticLog, {
-          event: 'request_error',
-          request,
-          round,
-          error:
-            error instanceof Error
-              ? { name: error.name, message: error.message }
-              : String(error),
-        });
-        throw error;
-      }
 
       responseHeaders = result.responseHeaders;
       response = result.value;
