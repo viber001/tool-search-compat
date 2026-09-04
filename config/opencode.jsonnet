@@ -26,8 +26,8 @@ local model(
   cacheRead,
   cacheWrite,
   output,
-  //context=500000,
-  context=625000,
+  //context=872000,
+  context=1050000,
   outputLimit=128000,
   maxReasoning=true,
 ) = {
