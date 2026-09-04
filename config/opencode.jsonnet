@@ -10,7 +10,7 @@ jsonnet opencode.jsonnet | jq -S '
 ' > opencode.jsonc
 */
 
-local variants(max=false) = {
+local photonmarkVariants(max=false) = {
   none: { disabled: true },
   low: { reasoningEffort: "low" },
   medium: { reasoningEffort: "medium" },
@@ -54,22 +54,19 @@ local model(
     output: output,
   },
 
-  variants: variants(maxReasoning),
+  variants: photonmarkVariants(maxReasoning),
 };
 
 // PhotonMark policy:
 // cache write tokens are tracked for audit only and are never billed.
-local models = {
-  "OpenAI/gpt-5.3-codex-spark":
+local photonmarkModels = {
+  "gpt-6-astra":
     model(
-      "gpt-5.3-codex-spark",
-      "0.05",
-      "0.005",
+      "gpt-6-astra",
+      "1",
+      "0.1",
       "0",
-      "0.3",
-      context=128000,
-      outputLimit=32768,
-      maxReasoning=false,
+      "5",
     ),
 
   "gpt-5.6-sol":
@@ -97,6 +94,18 @@ local models = {
       "0.002",
       "0",
       "0.12",
+    ),
+
+  "OpenAI/gpt-5.3-codex-spark":
+    model(
+      "gpt-5.3-codex-spark",
+      "0.05",
+      "0.005",
+      "0",
+      "0.3",
+      context=128000,
+      outputLimit=32768,
+      maxReasoning=false,
     ),
 };
 
@@ -213,7 +222,7 @@ local siliconflowModels = {
   },
 };
 
-local provider(displayName, baseURL, npm, providerModels=models) = {
+local provider(displayName, baseURL, npm, providerModels=photonmarkModels) = {
   name: displayName,
   npm: npm,
 
