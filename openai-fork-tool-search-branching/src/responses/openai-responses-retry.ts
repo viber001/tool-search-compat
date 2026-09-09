@@ -10,6 +10,34 @@ export const OPEN_CODE_RETRY_MAX_DELAY_NO_HEADERS = 30_000;
 export const OPEN_CODE_RETRY_MAX_DELAY = 2_147_483_647;
 export const OPEN_CODE_RETRY_MAX_RETRIES = 5;
 
+export function getOpenCodeResponseErrorStatusCode({
+  type,
+  code,
+}: {
+  type: string;
+  code: string;
+}): number {
+  const category = `${type} ${code}`.toLowerCase();
+
+  if (
+    /rate[_ -]?limit|too[_ -]?many[_ -]?requests|quota|resource[_ -]?exhausted/.test(
+      category,
+    )
+  ) {
+    return 429;
+  }
+
+  if (
+    /overload|service[_ -]?unavailable|server[_ -]?error|internal[_ -]?error|capacity/.test(
+      category,
+    )
+  ) {
+    return 503;
+  }
+
+  return 400;
+}
+
 const RETRYABLE_MESSAGE_PATTERNS = [
   /429|500|502|503|504|524/i,
   /rate increased too quickly|rate limit|rate-limit|rate_limit|too many requests/i,

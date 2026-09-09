@@ -60,6 +60,7 @@ import {
 import { convertToOpenAIResponsesInput } from './convert-to-openai-responses-input';
 import { mapOpenAIResponseFinishReason } from './map-openai-responses-finish-reason';
 import {
+  getOpenCodeResponseErrorStatusCode,
   OPEN_CODE_RETRY_MAX_RETRIES,
   retryWithOpenCodePolicy,
 } from './openai-responses-retry';
@@ -113,6 +114,9 @@ const diagnosticFallbackSessionKeys = new Map<string, string>();
 type OpenAIResponsesOutput = NonNullable<
   InferSchema<typeof openaiResponsesResponseSchema>['output']
 >;
+type OpenAIResponsesResponseWithOutput = InferSchema<
+  typeof openaiResponsesResponseSchema
+> & { output: OpenAIResponsesOutput };
 type OpenAIResponsesOutputItem = OpenAIResponsesOutput[number];
 type AssistantPromptContent = Extract<
   LanguageModelV4Prompt[number],
@@ -1043,7 +1047,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
       extractApprovalRequestIdToToolCallIdMapping(options.prompt);
 
     let responseHeaders: Record<string, string> | undefined;
-    let response!: InferSchema<typeof openaiResponsesResponseSchema>;
+    let response!: OpenAIResponsesResponseWithOutput;
     let rawResponse: unknown;
     const accumulatedVisibleOutput: OpenAIResponsesOutput = [];
     const request = ++codexToolSearchRequestSequence;
@@ -1076,7 +1080,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
             attempt,
             requestBody,
           });
-          return postJsonToApi({
+          const result = await postJsonToApi({
             url,
             headers: combineHeaders(this.config.headers?.(), options.headers),
             body: requestBody,
@@ -1087,6 +1091,44 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
             abortSignal: options.abortSignal,
             fetch: this.config.fetch,
           });
+
+          responseHeaders = result.responseHeaders;
+          rawResponse = result.rawValue;
+          const response = result.value;
+
+          if (response.error) {
+            throw new APICallError({
+              message: response.error.message,
+              url,
+              requestBodyValues: requestBody,
+              statusCode: getOpenCodeResponseErrorStatusCode(response.error),
+              responseHeaders,
+              responseBody: rawResponse as string,
+              data: { error: response.error },
+              isRetryable: false,
+            });
+          }
+
+          if (response.output == null) {
+            const detail = response.incomplete_details?.reason;
+            throw new APICallError({
+              message: detail
+                ? `Responses API returned no output (${detail})`
+                : 'Responses API returned no output',
+              url,
+              requestBodyValues: requestBody,
+              statusCode: 500,
+              responseHeaders,
+              responseBody: rawResponse as string,
+              data: { response },
+              isRetryable: false,
+            });
+          }
+
+          const responseWithOutput = response as typeof response & {
+            output: NonNullable<typeof response.output>;
+          };
+          return { ...result, value: responseWithOutput };
         },
         onError: async ({ error, attempt, retryable, willRetry, delayMs }) => {
           await appendDiagnosticLog(diagnosticLog, {
@@ -1106,7 +1148,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
       });
 
       responseHeaders = result.responseHeaders;
-      response = result.value;
+      response = result.value as OpenAIResponsesResponseWithOutput;
       rawResponse = result.rawValue;
 
       await appendDiagnosticLog(diagnosticLog, {
@@ -1117,33 +1159,6 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
         outputItems: summarizeDiagnosticOutput(response.output ?? []),
         error: response.error?.message,
       });
-
-      if (response.error) {
-        throw new APICallError({
-          message: response.error.message,
-          url,
-          requestBodyValues: requestBody,
-          statusCode: 400,
-          responseHeaders,
-          responseBody: rawResponse as string,
-          isRetryable: false,
-        });
-      }
-
-      if (response.output == null) {
-        const detail = response.incomplete_details?.reason;
-        throw new APICallError({
-          message: detail
-            ? `Responses API returned no output (${detail})`
-            : 'Responses API returned no output',
-          url,
-          requestBodyValues: requestBody,
-          statusCode: 500,
-          responseHeaders,
-          responseBody: rawResponse as string,
-          isRetryable: false,
-        });
-      }
 
       const toolSearchOutputCallIds = new Set(
         response.output.flatMap(part =>

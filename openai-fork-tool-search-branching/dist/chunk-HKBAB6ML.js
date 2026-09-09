@@ -3958,6 +3958,23 @@ var OPEN_CODE_RETRY_JITTER_FACTOR = 0.25;
 var OPEN_CODE_RETRY_MAX_DELAY_NO_HEADERS = 3e4;
 var OPEN_CODE_RETRY_MAX_DELAY = 2147483647;
 var OPEN_CODE_RETRY_MAX_RETRIES = 5;
+function getOpenCodeResponseErrorStatusCode({
+  type,
+  code
+}) {
+  const category = `${type} ${code}`.toLowerCase();
+  if (/rate[_ -]?limit|too[_ -]?many[_ -]?requests|quota|resource[_ -]?exhausted/.test(
+    category
+  )) {
+    return 429;
+  }
+  if (/overload|service[_ -]?unavailable|server[_ -]?error|internal[_ -]?error|capacity/.test(
+    category
+  )) {
+    return 503;
+  }
+  return 400;
+}
 var RETRYABLE_MESSAGE_PATTERNS = [
   /429|500|502|503|504|524/i,
   /rate increased too quickly|rate limit|rate-limit|rate_limit|too many requests/i,
@@ -6596,7 +6613,7 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
             attempt,
             requestBody
           });
-          return postJsonToApi5({
+          const result2 = await postJsonToApi5({
             url,
             headers: combineHeaders5(this.config.headers?.(), options.headers),
             body: requestBody,
@@ -6607,6 +6624,36 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
             abortSignal: options.abortSignal,
             fetch: this.config.fetch
           });
+          responseHeaders = result2.responseHeaders;
+          rawResponse = result2.rawValue;
+          const response2 = result2.value;
+          if (response2.error) {
+            throw new APICallError3({
+              message: response2.error.message,
+              url,
+              requestBodyValues: requestBody,
+              statusCode: getOpenCodeResponseErrorStatusCode(response2.error),
+              responseHeaders,
+              responseBody: rawResponse,
+              data: { error: response2.error },
+              isRetryable: false
+            });
+          }
+          if (response2.output == null) {
+            const detail = response2.incomplete_details?.reason;
+            throw new APICallError3({
+              message: detail ? `Responses API returned no output (${detail})` : "Responses API returned no output",
+              url,
+              requestBodyValues: requestBody,
+              statusCode: 500,
+              responseHeaders,
+              responseBody: rawResponse,
+              data: { response: response2 },
+              isRetryable: false
+            });
+          }
+          const responseWithOutput = response2;
+          return { ...result2, value: responseWithOutput };
         },
         onError: async ({ error, attempt, retryable, willRetry, delayMs }) => {
           await appendDiagnosticLog(diagnosticLog, {
@@ -6632,29 +6679,6 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
         outputItems: summarizeDiagnosticOutput(response.output ?? []),
         error: response.error?.message
       });
-      if (response.error) {
-        throw new APICallError3({
-          message: response.error.message,
-          url,
-          requestBodyValues: requestBody,
-          statusCode: 400,
-          responseHeaders,
-          responseBody: rawResponse,
-          isRetryable: false
-        });
-      }
-      if (response.output == null) {
-        const detail = response.incomplete_details?.reason;
-        throw new APICallError3({
-          message: detail ? `Responses API returned no output (${detail})` : "Responses API returned no output",
-          url,
-          requestBodyValues: requestBody,
-          statusCode: 500,
-          responseHeaders,
-          responseBody: rawResponse,
-          isRetryable: false
-        });
-      }
       const toolSearchOutputCallIds = new Set(
         response.output.flatMap(
           (part) => part.type === "tool_search_output" && part.call_id != null ? [part.call_id] : []

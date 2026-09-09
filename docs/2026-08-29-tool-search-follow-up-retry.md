@@ -80,6 +80,59 @@ OpenCode original request
 只有 follow-up API 真正返回成功响应时，内部构造的 `tool_search_output(tools=[])` 才会参与后续 compatibility 处理。
 错误路径不会返回 provider result，也不会向 OpenCode 提交伪造的 TSC 成功状态。
 
+## 2026-09-09 修复：成功 HTTP 响应中的错误
+
+本次审计确认，原有重试策略已经覆盖 HTTP `429`、`5xx`、超时、网络错误和
+`resource_exhausted` 等上游资源不足场景。普通 `round=0` 请求仍由 OpenCode
+外层重试，compat 不重复执行这一层，避免两层重试叠加造成请求数放大。
+
+原实现有一个边界遗漏：`postJsonToApi()` 返回 HTTP `2xx` 后，如果 JSON body
+包含 `response.error`，或者 `output` 为空，代码会在 retry wrapper 外才构造
+`APICallError`。因此下面这种上游响应不会触发隐藏 follow-up 的 retry：
+
+```json
+{
+  "error": {
+    "type": "server_error",
+    "code": "server_is_overloaded",
+    "message": "Our servers are currently overloaded. Please try again later."
+  }
+}
+```
+
+修复已同步到两个 fork 的 `src/responses/openai-responses-language-model.ts`：
+
+- 将 `response.error` 和空 `output` 的检查移入 `retryWithOpenCodePolicy()` 的
+  `execute` 回调；
+- transient response error 会按照既有退避策略重试，耗尽后把最后一个错误原样
+  返回给 OpenCode；
+- 在两个 fork 的 `src/responses/openai-responses-retry.ts` 中新增
+  `getOpenCodeResponseErrorStatusCode()`，将 overloaded/service unavailable 映射
+  为 `503`，rate limit/resource exhausted 映射为 `429`，其他响应体错误映射为
+  `400`；
+- 保留 `type`、`code` 和原始 response error，便于 OpenCode 继续进行错误分类；
+- `insufficient_quota`、`usage_not_included`、`invalid_prompt` 仍然是 fatal error，
+  即使它们被映射为 `429`，也不会无效重试。
+
+目标会话中的
+`Invalid type for 'input[279].content[1]': expected an object, but got null instead.`
+仍然是 HTTP `400` 的请求体 schema 错误，不属于上游资源不足，继续保持不重试。
+重试不会修复已经生成的非法 JSON；这类问题必须修复 prompt/file part 转换或从坏
+历史创建干净的 session。
+
+## 验证补充
+
+新增真实 HTTP server 测试覆盖：
+
+1. HTTP `200` 加 `response.error=server_is_overloaded` 会 retry 并成功；
+2. HTTP `200` 加 `response.error=insufficient_quota` 不会 retry，并将错误返回给
+   调用方；
+3. response error 的状态码映射保留 transient/fatal 边界。
+
+两份 fork 均通过 `npm run test:tool-search-retry` 和
+`npx tsc --noEmit --pretty false -p tsconfig.build.json`。修改后需要完全退出并
+重启 OpenCode GUI，因为 provider bundle 在进程启动时加载，不会热更新。
+
 ## Package Boundary
 
 fork package 不能直接 import OpenCode 内部的 `SessionRetry`。

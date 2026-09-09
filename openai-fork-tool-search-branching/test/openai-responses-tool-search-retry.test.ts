@@ -5,6 +5,7 @@ import { APICallError } from '@ai-sdk/provider';
 import { createOpenAI } from '../src/openai-provider';
 import {
   getOpenCodeRetryDelay,
+  getOpenCodeResponseErrorStatusCode,
   isOpenCodeRetryableError,
   OPEN_CODE_RETRY_MAX_RETRIES,
 } from '../src/responses/openai-responses-retry';
@@ -164,6 +165,21 @@ function successfulFollowUp(response: ServerResponse) {
   sendJson(response, 200, responsePayload([successfulMessage()]));
 }
 
+function responseErrorPayload({
+  message,
+  type,
+  code,
+}: {
+  message: string;
+  type: string;
+  code: string;
+}) {
+  return {
+    ...responsePayload([]),
+    error: { message, type, code, param: null },
+  };
+}
+
 function assertSuccessfulResult(result: Awaited<ReturnType<ReturnType<typeof runScenario>['call']>>) {
   assert(
     result.content.some(
@@ -259,6 +275,63 @@ test('TSC follow-up retries HTTP 503 and honors Retry-After', async () => {
   try {
     assertSuccessfulResult(await scenario.call());
     assert.equal(scenario.bodies.length, 3);
+  } finally {
+    await scenario.close();
+  }
+});
+
+test('TSC follow-up retries transient response.error in a successful HTTP response', async () => {
+  const scenario = await runScenario({
+    steps: [
+      initialToolSearch,
+      response =>
+        sendJson(
+          response,
+          200,
+          responseErrorPayload({
+            message: 'Our servers are currently overloaded. Please try again later.',
+            type: 'server_error',
+            code: 'server_is_overloaded',
+          }),
+          { 'retry-after-ms': '0' },
+        ),
+      successfulFollowUp,
+    ],
+  });
+  try {
+    assertSuccessfulResult(await scenario.call());
+    assert.equal(scenario.bodies.length, 3);
+    assertFollowUpInput(scenario.bodies[1]);
+    assertFollowUpInput(scenario.bodies[2]);
+  } finally {
+    await scenario.close();
+  }
+});
+
+test('TSC follow-up returns fatal response.error without retry', async () => {
+  const scenario = await runScenario({
+    steps: [
+      initialToolSearch,
+      response =>
+        sendJson(
+          response,
+          200,
+          responseErrorPayload({
+            message: 'You exceeded your current quota',
+            type: 'insufficient_quota',
+            code: 'insufficient_quota',
+          }),
+        ),
+    ],
+  });
+  try {
+    await assert.rejects(scenario.call(), error => {
+      assert(APICallError.isInstance(error));
+      assert.equal(error.statusCode, 429);
+      assert.equal(error.data?.error?.code, 'insufficient_quota');
+      return true;
+    });
+    assert.equal(scenario.bodies.length, 2);
   } finally {
     await scenario.close();
   }
@@ -478,6 +551,20 @@ test('OpenCode retry re-executes TSC after hidden 503 retries are exhausted', as
 });
 
 test('retry classification matches OpenCode fatal and transient boundaries', () => {
+  assert.equal(
+    getOpenCodeResponseErrorStatusCode({
+      type: 'server_error',
+      code: 'server_is_overloaded',
+    }),
+    503,
+  );
+  assert.equal(
+    getOpenCodeResponseErrorStatusCode({
+      type: 'insufficient_quota',
+      code: 'insufficient_quota',
+    }),
+    429,
+  );
   assert.equal(
     isOpenCodeRetryableError(
       new APICallError({

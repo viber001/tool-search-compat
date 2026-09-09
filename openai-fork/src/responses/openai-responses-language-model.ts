@@ -60,6 +60,7 @@ import {
 import { convertToOpenAIResponsesInput } from './convert-to-openai-responses-input';
 import { mapOpenAIResponseFinishReason } from './map-openai-responses-finish-reason';
 import {
+  getOpenCodeResponseErrorStatusCode,
   OPEN_CODE_RETRY_MAX_RETRIES,
   retryWithOpenCodePolicy,
 } from './openai-responses-retry';
@@ -90,6 +91,9 @@ let codexToolSearchRequestSequence = 0;
 type OpenAIResponsesOutput = NonNullable<
   InferSchema<typeof openaiResponsesResponseSchema>['output']
 >;
+type OpenAIResponsesResponseWithOutput = InferSchema<
+  typeof openaiResponsesResponseSchema
+> & { output: OpenAIResponsesOutput };
 type OpenAIResponsesOutputItem = OpenAIResponsesOutput[number];
 type AssistantPromptContent = Extract<
   LanguageModelV4Prompt[number],
@@ -882,7 +886,7 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
       extractApprovalRequestIdToToolCallIdMapping(options.prompt);
 
     let responseHeaders: Record<string, string> | undefined;
-    let response!: InferSchema<typeof openaiResponsesResponseSchema>;
+    let response!: OpenAIResponsesResponseWithOutput;
     let rawResponse: unknown;
     let deferredOpenCodeResult:
       | {
@@ -899,14 +903,14 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
       const result = await retryWithOpenCodePolicy({
         maxRetries: round === 0 ? 0 : OPEN_CODE_RETRY_MAX_RETRIES,
         abortSignal: options.abortSignal,
-        execute: attempt => {
+        execute: async attempt => {
           logCodexToolSearchRequest({
             request,
             round,
             attempt,
             requestBody,
           });
-          return postJsonToApi({
+          const result = await postJsonToApi({
             url,
             headers: combineHeaders(this.config.headers?.(), options.headers),
             body: requestBody,
@@ -917,42 +921,53 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV4 {
             abortSignal: options.abortSignal,
             fetch: this.config.fetch,
           });
+
+          responseHeaders = result.responseHeaders;
+          rawResponse = result.rawValue;
+          const response = result.value;
+
+          if (response.error) {
+            throw new APICallError({
+              message: response.error.message,
+              url,
+              requestBodyValues: requestBody,
+              statusCode: getOpenCodeResponseErrorStatusCode(response.error),
+              responseHeaders,
+              responseBody: rawResponse as string,
+              data: { error: response.error },
+              isRetryable: false,
+            });
+          }
+
+          if (response.output == null) {
+            const detail = response.incomplete_details?.reason;
+            throw new APICallError({
+              message: detail
+                ? `Responses API returned no output (${detail})`
+                : 'Responses API returned no output',
+              url,
+              requestBodyValues: requestBody,
+              statusCode: 500,
+              responseHeaders,
+              responseBody: rawResponse as string,
+              data: { response },
+              isRetryable: false,
+            });
+          }
+
+          const responseWithOutput = response as typeof response & {
+            output: NonNullable<typeof response.output>;
+          };
+          return { ...result, value: responseWithOutput };
         },
       });
 
       responseHeaders = result.responseHeaders;
-      response = result.value;
+      response = result.value as OpenAIResponsesResponseWithOutput;
       rawResponse = result.rawValue;
 
-      if (response.error) {
-        throw new APICallError({
-          message: response.error.message,
-          url,
-          requestBodyValues: requestBody,
-          statusCode: 400,
-          responseHeaders,
-          responseBody: rawResponse as string,
-          isRetryable: false,
-        });
-      }
-
-      if (response.output == null) {
-        const detail = response.incomplete_details?.reason;
-        throw new APICallError({
-          message: detail
-            ? `Responses API returned no output (${detail})`
-            : 'Responses API returned no output',
-          url,
-          requestBodyValues: requestBody,
-          statusCode: 500,
-          responseHeaders,
-          responseBody: rawResponse as string,
-          isRetryable: false,
-        });
-      }
-
       if (deferredOpenCodeResult != null) {
-        response = deferredOpenCodeResult.response;
+        response = deferredOpenCodeResult.response as OpenAIResponsesResponseWithOutput;
         responseHeaders = deferredOpenCodeResult.responseHeaders;
         rawResponse = deferredOpenCodeResult.rawResponse;
         requestBody = deferredOpenCodeResult.requestBody;
