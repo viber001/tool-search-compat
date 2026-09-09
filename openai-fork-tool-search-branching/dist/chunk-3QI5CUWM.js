@@ -3021,6 +3021,27 @@ function isFileId(data, prefixes) {
   if (!prefixes) return false;
   return prefixes.some((prefix) => data.startsWith(prefix));
 }
+function normalizeFileData(data) {
+  if (typeof data === "string") {
+    const dataUrl = /^data:[^,]*;base64,(.*)$/s.exec(data);
+    return { type: "data", data: dataUrl?.[1] ?? data };
+  }
+  if (data instanceof Uint8Array) {
+    return { type: "data", data };
+  }
+  if (data instanceof URL) {
+    return { type: "url", url: data };
+  }
+  if (data != null && typeof data === "object") {
+    const type = data.type;
+    if (type === "data" || type === "url" || type === "reference" || type === "text") {
+      return data;
+    }
+  }
+  throw new UnsupportedFunctionalityError4({
+    functionality: `unsupported file part data type: ${typeof data}`
+  });
+}
 async function convertToOpenAIResponsesInput({
   prompt,
   toolNameMapping,
@@ -3121,10 +3142,11 @@ async function convertToOpenAIResponsesInput({
                   part.providerOptions,
                   providerOptionsName
                 );
-                switch (part.data.type) {
+                const fileData = normalizeFileData(part.data);
+                switch (fileData.type) {
                   case "reference": {
                     const fileId = resolveProviderReference2({
-                      reference: part.data.reference,
+                      reference: fileData.reference,
                       provider: providerOptionsName
                     });
                     if (getTopLevelMediaType2(part.mediaType) === "image") {
@@ -3156,8 +3178,8 @@ async function convertToOpenAIResponsesInput({
                     if (topLevel === "image") {
                       return {
                         type: "input_image",
-                        ...part.data.type === "url" ? { image_url: part.data.url.toString() } : typeof part.data.data === "string" && isFileId(part.data.data, fileIdPrefixes) ? { file_id: part.data.data } : {
-                          image_url: `data:${resolveFullMediaType2({ part })};base64,${convertToBase642(part.data.data)}`
+                        ...fileData.type === "url" ? { image_url: fileData.url.toString() } : typeof fileData.data === "string" && isFileId(fileData.data, fileIdPrefixes) ? { file_id: fileData.data } : {
+                          image_url: `data:${resolveFullMediaType2({ part })};base64,${convertToBase642(fileData.data)}`
                         },
                         detail: part.providerOptions?.[providerOptionsName]?.imageDetail,
                         ...promptCacheBreakpoint != null && {
@@ -3165,10 +3187,10 @@ async function convertToOpenAIResponsesInput({
                         }
                       };
                     } else {
-                      if (part.data.type === "url") {
+                      if (fileData.type === "url") {
                         return {
                           type: "input_file",
-                          file_url: part.data.url.toString(),
+                          file_url: fileData.url.toString(),
                           ...promptCacheBreakpoint != null && {
                             prompt_cache_breakpoint: promptCacheBreakpoint
                           }
@@ -3182,9 +3204,9 @@ async function convertToOpenAIResponsesInput({
                       }
                       return {
                         type: "input_file",
-                        ...typeof part.data.data === "string" && isFileId(part.data.data, fileIdPrefixes) ? { file_id: part.data.data } : {
+                        ...typeof fileData.data === "string" && isFileId(fileData.data, fileIdPrefixes) ? { file_id: fileData.data } : {
                           filename: part.filename ?? (fullMediaType === "application/pdf" ? `part-${index}.pdf` : `part-${index}`),
-                          file_data: `data:${fullMediaType};base64,${convertToBase642(part.data.data)}`
+                          file_data: `data:${fullMediaType};base64,${convertToBase642(fileData.data)}`
                         },
                         ...promptCacheBreakpoint != null && {
                           prompt_cache_breakpoint: promptCacheBreakpoint
@@ -3192,8 +3214,16 @@ async function convertToOpenAIResponsesInput({
                       };
                     }
                   }
+                  default:
+                    throw new UnsupportedFunctionalityError4({
+                      functionality: `unsupported user file data type: ${String(fileData.type)}`
+                    });
                 }
               }
+              default:
+                throw new UnsupportedFunctionalityError4({
+                  functionality: `unsupported user content part type: ${String(part.type)}`
+                });
             }
           })
         });
@@ -5922,6 +5952,10 @@ function mapShellSkills(skills) {
 // src/responses/openai-responses-language-model.ts
 var MAX_CODEX_TOOL_SEARCH_ROUNDS = 3;
 var codexToolSearchRequestSequence = 0;
+var TOOL_SEARCH_COMPAT_PROVIDER_METADATA = "toolSearchCompat";
+var diagnosticLogModulesPromise;
+var diagnosticLogs = /* @__PURE__ */ new Map();
+var diagnosticFallbackSessionKeys = /* @__PURE__ */ new Map();
 function logCodexToolSearchRequest({
   request,
   round,
@@ -5932,19 +5966,7 @@ function logCodexToolSearchRequest({
     return;
   }
   const input = Array.isArray(requestBody.input) ? requestBody.input : [];
-  const inputItems = input.map((item, index) => {
-    if (item == null || typeof item !== "object") {
-      return { index, type: typeof item };
-    }
-    const record = item;
-    return {
-      index,
-      type: record.type ?? record.role ?? "unknown",
-      ...typeof record.id === "string" ? { id: record.id } : {},
-      ...typeof record.call_id === "string" ? { callId: record.call_id } : {},
-      ...record.type === "reasoning" ? { hasEncryptedContent: typeof record.encrypted_content === "string" } : {}
-    };
-  });
+  const inputItems = summarizeDiagnosticItems(input);
   console.error(
     "OPENAI TOOL SEARCH COMPAT REQUEST",
     JSON.stringify({
@@ -5956,6 +5978,115 @@ function logCodexToolSearchRequest({
       inputItems
     })
   );
+}
+function summarizeDiagnosticItems(items) {
+  return items.map((item, index) => {
+    if (item == null || typeof item !== "object") {
+      return { index, type: typeof item };
+    }
+    const record = item;
+    return {
+      index,
+      type: record.type ?? record.role ?? "unknown",
+      ...typeof record.id === "string" ? { id: record.id } : {},
+      ...typeof record.call_id === "string" ? { callId: record.call_id } : {},
+      ...typeof record.execution === "string" ? { execution: record.execution } : {},
+      ...typeof record.status === "string" ? { status: record.status } : {},
+      ...record.type === "reasoning" ? { hasEncryptedContent: typeof record.encrypted_content === "string" } : {}
+    };
+  });
+}
+function summarizeDiagnosticOutput(output) {
+  return summarizeDiagnosticItems(output);
+}
+function sanitizeDiagnosticFileComponent(value) {
+  return value.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 160) || "unknown";
+}
+async function loadDiagnosticLogModules() {
+  if (typeof process === "undefined" || process.versions?.node == null) {
+    return void 0;
+  }
+  diagnosticLogModulesPromise ??= Promise.all([
+    import("fs/promises"),
+    import("path")
+  ]).then(([fs, path]) => ({
+    appendFile: fs.appendFile,
+    mkdir: fs.mkdir,
+    join: path.join
+  })).catch(() => void 0);
+  return diagnosticLogModulesPromise;
+}
+async function getDiagnosticLog({
+  provider,
+  modelId,
+  sessionKey
+}) {
+  if (process.env.OPENAI_TOOL_SEARCH_COMPAT_DEBUG_FILE === "0") {
+    return void 0;
+  }
+  const modules = await loadDiagnosticLogModules();
+  const home = process.env.HOME ?? process.env.USERPROFILE;
+  if (modules == null || home == null) {
+    return void 0;
+  }
+  const providerModelKey = `${provider}\0${modelId}`;
+  let normalizedSessionKey = sessionKey?.trim();
+  if (normalizedSessionKey == null || normalizedSessionKey.length === 0) {
+    normalizedSessionKey = diagnosticFallbackSessionKeys.get(providerModelKey);
+    if (normalizedSessionKey == null) {
+      normalizedSessionKey = `run_${generateId2()}`;
+      diagnosticFallbackSessionKeys.set(providerModelKey, normalizedSessionKey);
+    }
+  }
+  const key = `${provider}\0${normalizedSessionKey}`;
+  const existing = diagnosticLogs.get(key);
+  if (existing != null) {
+    return existing;
+  }
+  const fileName = `${sanitizeDiagnosticFileComponent(normalizedSessionKey)}.jsonl`;
+  const providerDirectory = sanitizeDiagnosticFileComponent(
+    provider.endsWith(".responses") ? provider.slice(0, -".responses".length) : provider
+  );
+  const directory = modules.join(
+    home,
+    ".local",
+    "share",
+    "opencode",
+    "provider-debug",
+    providerDirectory
+  );
+  const log = {
+    filePath: modules.join(directory, fileName),
+    directory,
+    provider,
+    modelId,
+    sessionKey: normalizedSessionKey,
+    requestCount: 0,
+    hiddenRoundCount: 0,
+    writeQueue: Promise.resolve(),
+    modules
+  };
+  diagnosticLogs.set(key, log);
+  return log;
+}
+function appendDiagnosticLog(log, event) {
+  if (log == null) {
+    return Promise.resolve();
+  }
+  const line = `${JSON.stringify({
+    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+    provider: log.provider,
+    modelId: log.modelId,
+    sessionKey: log.sessionKey,
+    ...event
+  })}
+`;
+  const write = log.writeQueue.then(async () => {
+    await log.modules.mkdir(log.directory, { recursive: true });
+    await log.modules.appendFile(log.filePath, line, "utf8");
+  });
+  log.writeQueue = write.catch(() => void 0);
+  return write.catch(() => void 0);
 }
 function toolSearchOutput(call) {
   return {
@@ -6211,6 +6342,11 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
         schema: openaiLanguageModelResponsesOptionsSchema
       });
     }
+    const diagnosticLog = await getDiagnosticLog({
+      provider: this.config.provider,
+      modelId: this.modelId,
+      sessionKey: typeof openaiOptions?.promptCacheKey === "string" ? openaiOptions.promptCacheKey : void 0
+    });
     const resolvedReasoningEffort = openaiOptions?.reasoningEffort ?? (isCustomReasoning2(reasoning) ? reasoning : void 0);
     const resolvedReasoningSummary = openaiOptions?.reasoningSummary !== void 0 ? openaiOptions.reasoningSummary : resolvedReasoningEffort != null && resolvedReasoningEffort !== "none" ? "detailed" : void 0;
     const isReasoningModel = openaiOptions?.forceReasoning ?? modelCapabilities.isReasoningModel;
@@ -6453,7 +6589,8 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
       toolNameMapping,
       providerOptionsName,
       isShellProviderExecuted,
-      convertPromptToInput
+      convertPromptToInput,
+      diagnosticLog
     };
   }
   async doGenerate(options) {
@@ -6464,7 +6601,8 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
       toolNameMapping,
       providerOptionsName,
       isShellProviderExecuted,
-      convertPromptToInput
+      convertPromptToInput,
+      diagnosticLog
     } = await this.getArgs(options);
     let requestBody = body;
     const url = this.config.url({
@@ -6475,14 +6613,30 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
     let responseHeaders;
     let response;
     let rawResponse;
-    let deferredOpenCodeResult;
     const accumulatedVisibleOutput = [];
     const request = ++codexToolSearchRequestSequence;
     for (let round = 0; round < MAX_CODEX_TOOL_SEARCH_ROUNDS; round++) {
+      if (round > 0 && diagnosticLog != null) {
+        diagnosticLog.hiddenRoundCount += 1;
+      }
       const result = await retryWithOpenCodePolicy({
         maxRetries: round === 0 ? 0 : OPEN_CODE_RETRY_MAX_RETRIES,
         abortSignal: options.abortSignal,
         execute: async (attempt) => {
+          if (diagnosticLog != null) {
+            diagnosticLog.requestCount += 1;
+          }
+          await appendDiagnosticLog(diagnosticLog, {
+            event: "request_start",
+            request,
+            round,
+            attempt,
+            store: requestBody.store,
+            promptCacheKey: requestBody.prompt_cache_key,
+            inputItems: summarizeDiagnosticItems(
+              Array.isArray(requestBody.input) ? requestBody.input : []
+            )
+          });
           logCodexToolSearchRequest({
             request,
             round,
@@ -6530,18 +6684,31 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
           }
           const responseWithOutput = response2;
           return { ...result2, value: responseWithOutput };
+        },
+        onError: async ({ error, attempt, retryable, willRetry, delayMs }) => {
+          await appendDiagnosticLog(diagnosticLog, {
+            event: "request_error",
+            request,
+            round,
+            attempt,
+            retryableByOpenCode: retryable,
+            willRetryInCompat: willRetry,
+            ...delayMs != null ? { retryDelayMs: delayMs } : {},
+            error: error instanceof Error ? { name: error.name, message: error.message } : String(error)
+          });
         }
       });
       responseHeaders = result.responseHeaders;
       response = result.value;
       rawResponse = result.rawValue;
-      if (deferredOpenCodeResult != null) {
-        response = deferredOpenCodeResult.response;
-        responseHeaders = deferredOpenCodeResult.responseHeaders;
-        rawResponse = deferredOpenCodeResult.rawResponse;
-        requestBody = deferredOpenCodeResult.requestBody;
-        break;
-      }
+      await appendDiagnosticLog(diagnosticLog, {
+        event: "response",
+        request,
+        round,
+        responseId: response.id,
+        outputItems: summarizeDiagnosticOutput(response.output ?? []),
+        error: response.error?.message
+      });
       const toolSearchOutputCallIds = new Set(
         response.output.flatMap(
           (part) => part.type === "tool_search_output" && part.call_id != null ? [part.call_id] : []
@@ -6569,18 +6736,13 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
         (part) => part.type === "function_call"
       );
       if (hasFunctionCall2) {
-        deferredOpenCodeResult = {
-          response: {
-            ...response,
-            output: [...accumulatedVisibleOutput, ...visibleOutput]
-          },
-          responseHeaders,
-          rawResponse,
-          requestBody
+        response = {
+          ...response,
+          output: [...accumulatedVisibleOutput, ...visibleOutput]
         };
-      } else {
-        accumulatedVisibleOutput.push(...visibleOutput);
+        break;
       }
+      accumulatedVisibleOutput.push(...visibleOutput);
       if (round === MAX_CODEX_TOOL_SEARCH_ROUNDS - 1) {
         throw new APICallError3({
           message: "Responses API returned too many client-side tool_search_call items",
@@ -7109,6 +7271,26 @@ var OpenAIResponsesLanguageModel = class _OpenAIResponsesLanguageModel {
         ...response.reasoning?.context != null ? { reasoningContext: response.reasoning.context } : {}
       }
     };
+    if (diagnosticLog != null) {
+      const debugMetadata = {
+        requestCount: diagnosticLog.requestCount,
+        hiddenRoundCount: diagnosticLog.hiddenRoundCount
+      };
+      const debugProviderMetadata = {
+        debug: debugMetadata
+      };
+      providerMetadata[TOOL_SEARCH_COMPAT_PROVIDER_METADATA] = debugProviderMetadata;
+      if (content.length > 0) {
+        const firstContent = content[0];
+        content[0] = {
+          ...firstContent,
+          providerMetadata: {
+            ...firstContent.providerMetadata,
+            [TOOL_SEARCH_COMPAT_PROVIDER_METADATA]: debugProviderMetadata
+          }
+        };
+      }
+    }
     const usage = response.usage;
     return {
       content,

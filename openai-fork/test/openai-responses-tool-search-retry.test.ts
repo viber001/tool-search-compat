@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createServer, type ServerResponse } from 'node:http';
-import { APICallError } from '@ai-sdk/provider';
+import { APICallError, type LanguageModelV4Prompt } from '@ai-sdk/provider';
 import { createOpenAI } from '../src/openai-provider';
+import { convertToOpenAIResponsesInput } from '../src/responses/convert-to-openai-responses-input';
 import {
   getOpenCodeRetryDelay,
   isOpenCodeRetryableError,
@@ -520,6 +521,54 @@ test('retry classification matches OpenCode fatal and transient boundaries', () 
     ),
     false,
   );
+});
+
+test('converts legacy raw file parts without serializing null content', async () => {
+  const prompt = [
+    {
+      role: 'user' as const,
+      content: [
+        { type: 'text' as const, text: 'observer images' },
+        {
+          type: 'file' as const,
+          mediaType: 'image/png',
+          data: 'data:image/png;base64,AQID',
+        },
+        {
+          type: 'file' as const,
+          mediaType: 'image/png',
+          data: new Uint8Array([4, 5, 6]),
+        },
+        {
+          type: 'file' as const,
+          mediaType: 'image/png',
+          data: new URL('https://example.test/observer.png'),
+        },
+      ],
+    },
+  ] as unknown as LanguageModelV4Prompt;
+
+  const { input } = await convertToOpenAIResponsesInput({
+    prompt,
+    toolNameMapping: {
+      toProviderToolName: name => name,
+      toCustomToolName: name => name,
+    },
+    systemMessageMode: 'system',
+    providerOptionsName: 'openai.responses',
+    store: true,
+  });
+
+  const content = (input[0] as { content: Array<Record<string, unknown>> })
+    .content;
+  assert.deepEqual(
+    content.map(part => part.type),
+    ['input_text', 'input_image', 'input_image', 'input_image'],
+  );
+  assert.equal(content[1]?.image_url, 'data:image/png;base64,AQID');
+  assert.equal(content[2]?.image_url, 'data:image/png;base64,BAUG');
+  assert.equal(content[3]?.image_url, 'https://example.test/observer.png');
+  assert.ok(content.every(part => part != null && typeof part === 'object'));
 });
 
 let failures = 0;

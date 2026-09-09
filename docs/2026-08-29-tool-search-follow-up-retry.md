@@ -120,6 +120,126 @@ OpenCode original request
 重试不会修复已经生成的非法 JSON；这类问题必须修复 prompt/file part 转换或从坏
 历史创建干净的 session。
 
+## 2026-09-10 修复：旧版 file part 与图片附件
+
+### 现场定位
+
+最近 30 分钟内更新、但创建时间较早的目标会话是：
+
+- 工作区：`/Volumes/Develop/git/szbl-hpc/nsfc2026`
+- 标题：`视觉深度、完整三维模型与物体记忆设定`
+- Session ID：`ses_f94acde93ffemwXU0mIQxcpHJq`
+- 最后更新时间：2026-09-10 01:57:38
+
+该会话的 provider 诊断文件是
+`/Users/galaxy/.local/share/opencode/provider-debug/headroom-openai-fork/ses_f94acde93ffemwXU0mIQxcpHJq.jsonl`。
+
+同一会话中，01:39:47 的 `ProviderHeaderTimeoutError` 被标记为
+`retryableByOpenCode=true`，随后 OpenCode 外层重新请求并在 01:45:44 成功。
+这证明上游暂时不可用时的既有重试路径正常工作。
+
+01:46:19 的 assistant reasoning 为 `Generating observer images using PIL`。
+随后主程序成功读取以下四个 PNG，并为每个 tool result 保存一个图片 attachment：
+
+- `/tmp/prexp-before-observer_top.png`
+- `/tmp/prexp-before-observer_front.png`
+- `/tmp/prexp-before-observer_side.png`
+- `/tmp/prexp-before-agent_camera.png`
+
+01:57:38 的下一次请求有 185 个顶层 input item，`input[184]` 是一个
+synthetic `user` item；01:57:41 返回：
+
+```text
+Invalid type for 'input[184].content[1]': expected an object, but got null instead.
+```
+
+该错误是 HTTP `400`、`invalid_type`，诊断字段为
+`retryableByOpenCode=false` 和 `willRetryInCompat=false`。
+它不是 OpenAI 资源不足，也不应增加 retry 次数。
+
+### 根因
+
+OpenCode 主程序负责执行 `read`、读取 PNG，并将 attachment 持久化到
+`/Users/galaxy/.local/share/opencode/opencode.db` 的 `part.data.state.attachments`。
+主程序随后从历史重新组装 ModelMessage，provider fork 只负责把这个 prompt
+转换成 Responses API 的 `input`，不会把 `input[184]` 写入数据库。
+
+本机 OpenCode 侧的 `@ai-sdk/provider` `3.0.8` 在
+`/Users/galaxy/.config/opencode/node_modules/@ai-sdk/provider/dist/index.d.ts:1070-1157`
+定义旧版 `LanguageModelV3FilePart`，其中 `data` 是 `string`、`Uint8Array` 或
+`URL`。
+
+fork 自带的 `@ai-sdk/provider` `4.0.7` 在
+`/Users/galaxy/.config/opencode/tool-search-compat/openai-fork-tool-search-branching/node_modules/@ai-sdk/provider/dist/index.d.ts:1911-1925`
+则要求新版 tagged file data，例如 `{ type: 'data', data }` 或
+`{ type: 'url', url }`。
+
+旧版 converter 在
+`/Users/galaxy/.config/opencode/tool-search-compat/openai-fork-tool-search-branching/src/responses/convert-to-openai-responses-input.ts:194-316`
+直接读取 `part.data.type`，user content 的 `map` 没有未知形状的默认处理。
+当旧版 raw file data 未被识别时，map callback 会返回 `undefined`。
+`/Users/galaxy/.config/opencode/tool-search-compat/openai-fork-tool-search-branching/node_modules/@ai-sdk/provider-utils/dist/index.js:221-223`
+中的 `JSON.stringify` 会将数组元素 `undefined` 序列化为 `null`，于是服务端
+看到 `input[184].content[1] = null`。
+
+### 修复方法
+
+已同步修改以下两个 Responses converter：
+
+- `/Users/galaxy/.config/opencode/tool-search-compat/openai-fork-tool-search-branching/src/responses/convert-to-openai-responses-input.ts:87-111,252-356`
+- `/Users/galaxy/.config/opencode/tool-search-compat/openai-fork/src/responses/convert-to-openai-responses-input.ts:87-111,252-356`
+
+新增的 `normalizeFileData()` 在进入 file data switch 前统一处理：
+
+- raw `string` 转换为 `{ type: 'data', data }`；`data:image/...;base64,...` 会先去掉 Data URL 外层；
+- raw `Uint8Array` 转换为 `{ type: 'data', data }`；
+- raw `URL` 转换为 `{ type: 'url', url }`；
+- 已经是新版 tagged data 的对象保持不变；
+- 未知 file data 或 user content 类型显式抛出 `UnsupportedFunctionalityError`，禁止静默产生 `undefined`。
+
+该修复兼容 OpenCode 当前传入的旧版 V3 file part，同时保留 fork 原有的新版 V4
+file part 行为。当前 `headroom-openai-fork` 的入口由
+`/Users/galaxy/.config/opencode/opencode.jsonc:526-527` 指向
+`/Users/galaxy/.config/opencode/tool-search-compat/openai-fork-tool-search-branching/dist/index.js`。
+
+### 验证
+
+两个 fork 的
+`test/openai-responses-tool-search-retry.test.ts` 都新增了 raw string、
+`Uint8Array`、`URL` 和多个连续图片的转换测试，确保最终 content 不包含
+`null`。测试使用真实的 `model.doGenerate()` 路径，不只是调用 retry helper。
+
+在两个目录分别执行：
+
+```bash
+cd /Users/galaxy/.config/opencode/tool-search-compat/openai-fork-tool-search-branching
+npm run test:tool-search-retry
+npx tsc --noEmit --pretty false -p tsconfig.build.json
+
+cd /Users/galaxy/.config/opencode/tool-search-compat/openai-fork
+npm run test:tool-search-retry
+npx tsc --noEmit --pretty false -p tsconfig.build.json
+```
+
+两个 fork 均通过 16 项测试和 TypeScript 检查；两个 `dist` 目录也已重新构建。
+修改 provider source 或 bundle 后必须完全退出并重新启动 OpenCode GUI，运行中
+已经加载的 provider 不会热更新。
+
+### 现场恢复
+
+如果不能等待重启或不希望重放坏历史，可以按 message boundary 创建干净副本。
+本次已创建从图片生成前一刻开始的副本：
+
+- Session ID：`ses_f78824e6dffeYk7negTWliK4dQ`
+- 标题：`视觉深度、完整三维模型与物体记忆设定 (fork before observer images)`
+- boundary：`msg_087469423001MJ40PtXENY26Mf`
+- 副本包含 166 条 message、0 个 attachment；原会话保持不变。
+
+`input[184]` 是运行时数组下标，不是数据库字段，因此不能通过修改数据库中的
+“第 184 条”来修复。fork API 只能按 `messageID` 截断；当问题来自同一条
+assistant message 的图片 attachment 时，应 fork 到图片生成 assistant message
+之前，或在副本中删除 attachment，而不是填充一个空白 input。
+
 ## 验证补充
 
 新增真实 HTTP server 测试覆盖：

@@ -1,5 +1,6 @@
 import {
   UnsupportedFunctionalityError,
+  type LanguageModelV4FilePart,
   type LanguageModelV4Prompt,
   type SharedV4ProviderOptions,
   type LanguageModelV4ToolApprovalResponsePart,
@@ -81,6 +82,40 @@ function getPromptCacheBreakpoint(
 function isFileId(data: string, prefixes?: readonly string[]): boolean {
   if (!prefixes) return false;
   return prefixes.some(prefix => data.startsWith(prefix));
+}
+
+function normalizeFileData(
+  data: unknown,
+): LanguageModelV4FilePart['data'] {
+  // OpenCode can still provide the pre-v4 raw file data shape at runtime.
+  if (typeof data === 'string') {
+    const dataUrl = /^data:[^,]*;base64,(.*)$/s.exec(data);
+    return { type: 'data', data: dataUrl?.[1] ?? data };
+  }
+
+  if (data instanceof Uint8Array) {
+    return { type: 'data', data };
+  }
+
+  if (data instanceof URL) {
+    return { type: 'url', url: data };
+  }
+
+  if (data != null && typeof data === 'object') {
+    const type = (data as { type?: unknown }).type;
+    if (
+      type === 'data' ||
+      type === 'url' ||
+      type === 'reference' ||
+      type === 'text'
+    ) {
+      return data as LanguageModelV4FilePart['data'];
+    }
+  }
+
+  throw new UnsupportedFunctionalityError({
+    functionality: `unsupported file part data type: ${typeof data}`,
+  });
 }
 
 export async function convertToOpenAIResponsesInput({
@@ -214,10 +249,11 @@ export async function convertToOpenAIResponsesInput({
                   part.providerOptions,
                   providerOptionsName,
                 );
-                switch (part.data.type) {
+                const fileData = normalizeFileData(part.data);
+                switch (fileData.type) {
                   case 'reference': {
                     const fileId = resolveProviderReference({
-                      reference: part.data.reference,
+                      reference: fileData.reference,
                       provider: providerOptionsName,
                     });
 
@@ -254,13 +290,13 @@ export async function convertToOpenAIResponsesInput({
                     if (topLevel === 'image') {
                       return {
                         type: 'input_image',
-                        ...(part.data.type === 'url'
-                          ? { image_url: part.data.url.toString() }
-                          : typeof part.data.data === 'string' &&
-                              isFileId(part.data.data, fileIdPrefixes)
-                            ? { file_id: part.data.data }
+                        ...(fileData.type === 'url'
+                          ? { image_url: fileData.url.toString() }
+                          : typeof fileData.data === 'string' &&
+                              isFileId(fileData.data, fileIdPrefixes)
+                            ? { file_id: fileData.data }
                             : {
-                                image_url: `data:${resolveFullMediaType({ part })};base64,${convertToBase64(part.data.data)}`,
+                                image_url: `data:${resolveFullMediaType({ part })};base64,${convertToBase64(fileData.data)}`,
                               }),
                         detail:
                           part.providerOptions?.[providerOptionsName]
@@ -270,10 +306,10 @@ export async function convertToOpenAIResponsesInput({
                         }),
                       };
                     } else {
-                      if (part.data.type === 'url') {
+                      if (fileData.type === 'url') {
                         return {
                           type: 'input_file',
-                          file_url: part.data.url.toString(),
+                          file_url: fileData.url.toString(),
                           ...(promptCacheBreakpoint != null && {
                             prompt_cache_breakpoint: promptCacheBreakpoint,
                           }),
@@ -292,16 +328,16 @@ export async function convertToOpenAIResponsesInput({
 
                       return {
                         type: 'input_file',
-                        ...(typeof part.data.data === 'string' &&
-                        isFileId(part.data.data, fileIdPrefixes)
-                          ? { file_id: part.data.data }
+                        ...(typeof fileData.data === 'string' &&
+                        isFileId(fileData.data, fileIdPrefixes)
+                          ? { file_id: fileData.data }
                           : {
                               filename:
                                 part.filename ??
                                 (fullMediaType === 'application/pdf'
                                   ? `part-${index}.pdf`
                                   : `part-${index}`),
-                              file_data: `data:${fullMediaType};base64,${convertToBase64(part.data.data)}`,
+                              file_data: `data:${fullMediaType};base64,${convertToBase64(fileData.data)}`,
                             }),
                         ...(promptCacheBreakpoint != null && {
                           prompt_cache_breakpoint: promptCacheBreakpoint,
@@ -309,8 +345,16 @@ export async function convertToOpenAIResponsesInput({
                       };
                     }
                   }
+                  default:
+                    throw new UnsupportedFunctionalityError({
+                      functionality: `unsupported user file data type: ${String((fileData as { type?: unknown }).type)}`,
+                    });
                 }
               }
+              default:
+                throw new UnsupportedFunctionalityError({
+                  functionality: `unsupported user content part type: ${String((part as { type?: unknown }).type)}`,
+                });
             }
           }),
         });
