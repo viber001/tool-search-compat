@@ -306,3 +306,216 @@ npm run test:tool-search-retry
 12. 失败调用不返回 provider result；
 13. retry 使用相同 follow-up input，不提交跨调用状态；
 14. 原有 TSC 成功路径保持可用。
+
+## 2026-09-11 修复：Headroom streaming retry 与压缩超时
+
+### 现场
+
+目标会话位于：
+
+```text
+/Volumes/Develop/git/szbl-hpc/pixies
+```
+
+会话标题为 `GROMACS CUDA 后缀配置效果解析`，Session ID 为：
+
+```text
+ses_f76b71512ffe1JISmRwBhYzsQN
+```
+
+2026-09-10 13:13 和 13:14 左右，fork 请求分别遇到 `Content Too Large`。
+SQLite 中对应的真实上游响应体不是 OpenAI 的资源不足错误，而是 Headroom 返回的：
+
+```text
+headroom: compression timeout on a 506924-byte request — please compact context and retry.
+headroom: compression timeout on a 499936-byte request — please compact context and retry.
+```
+
+Headroom `0.37.0` 的原始请求体上限是 `100 MiB`，所以这里不是 500 KB 请求超过原始 body 上限。
+请求在 Headroom 的压缩 executor 中超过默认 `30 s` 超时，随后以 HTTP `413` 和
+`compression_refused` fail-closed，避免把未经压缩的大上下文继续发送到上游。
+
+这类错误不能通过重试相同 request body 修复。
+应当先 compact 历史、删除旧工具输出，或者从较早的 message 创建新会话。
+增加压缩超时时间只能缓解压缩长尾，不能替代上下文管理。
+
+### Fork 与原版的差异
+
+branching fork 的 `doStream()` 实际调用 `doGenerate()`，发送给 Headroom 的是
+`stream: false` 请求，因此使用 buffered retry 路径。
+原版 OpenAI provider 通常发送 `stream: true`，使用 streaming retry 路径。
+
+切换原版后能够继续一段时间，只说明两种 provider 的请求序列化、上下文压缩或实际 request size 不同。
+它不表示上游已经恢复；会话继续增长后，原版仍可能遇到压缩超时或上游过载。
+
+### 上游过载错误
+
+中转站记录中的：
+
+```text
+stream failed type=service_unavailable_error code=server_is_overloaded signal=rate_limit
+```
+
+属于另一类 transient upstream error。
+它应当与 `compression_refused` 分开处理。
+
+本机 Headroom 安装包和 OpenCode 日志没有找到这段完整字符串，因此它很可能来自
+`https://codex.photonmark.com/openai/v1` 或更上游的中转层。
+如果上游在发送 SSE body 前返回 HTTP `429` 或 `5xx`，可以安全重试。
+如果上游先返回 HTTP `200`，之后在 SSE 内发送 `response.failed` 或 `error` 事件，
+只有在尚未发送有效输出前才能安全重连；已经发送 token 后不能重放整个 stream。
+
+### Headroom source patch
+
+Headroom 版本：`0.37.0`。
+上游源码临时 checkout 在：
+
+```text
+/var/folders/rv/8m9kmnws229_62m4d4bw16jc0000gn/T/opencode/headroom-upstream
+```
+
+以后升级 Headroom 后，应在对应版本的 source 中重新应用以下两个改动。
+不要依赖临时目录仍然存在。
+
+文件一：`headroom/proxy/helpers.py`。
+在现有的 `RETRYABLE_OVERLOAD_STATUSES` 后增加：
+
+```python
+# Statuses that are safe to retry before a streaming response has sent any
+# body bytes. Keep this separate from RETRYABLE_OVERLOAD_STATUSES because a
+# streaming upstream can fail with a gateway/server 5xx before the SSE body
+# starts, while the buffered path already retries all 5xx in _retry_request.
+RETRYABLE_STREAM_STATUSES: frozenset[int] = frozenset(
+    {*RETRYABLE_OVERLOAD_STATUSES, 500, 502, 503, 504, 524}
+)
+```
+
+文件二：`headroom/proxy/handlers/streaming.py`。
+在 helpers import 中加入 `RETRYABLE_STREAM_STATUSES`：
+
+```python
+from headroom.proxy.helpers import (
+    RETRYABLE_STREAM_STATUSES,
+    jitter_delay_ms,
+    retry_after_ms,
+)
+```
+
+在建立上游 SSE 连接、发送任何 body 之前，将状态判断改为：
+
+```python
+if (
+    upstream_response.status_code in RETRYABLE_STREAM_STATUSES
+    and self.config.retry_enabled
+    and attempt < retry_attempts - 1
+):
+    delay_with_jitter = retry_after_ms(
+        upstream_response, self.config.retry_max_delay_ms
+    ) or jitter_delay_ms(
+        self.config.retry_base_delay_ms,
+        self.config.retry_max_delay_ms,
+        attempt,
+    )
+    await upstream_response.aclose()
+    logger.warning(
+        f"[{request_id}] Upstream {upstream_response.status_code} "
+        f"(attempt {attempt + 1}/{retry_attempts}), "
+        f"retrying in {delay_with_jitter:.0f}ms"
+    )
+    await asyncio.sleep(delay_with_jitter / 1000)
+    continue
+```
+
+不要把非成功状态的判断从 `>= 400` 改成 `>= 300`，除非同时补齐 redirect 的测试和处理。
+本次问题只需要增加 429/5xx 的 streaming retry。
+
+重试耗尽后必须保留最后一次 upstream 的 status code 和 body，返回给 OpenCode。
+不能把失败转成 HTTP `200`，也不能在已经向客户端发送有效 SSE 输出后重放。
+
+### 当前运行配置
+
+当前实际运行的 pipx 安装包路径为：
+
+```text
+/Users/galaxy/.local/pipx/venvs/headroom-ai/lib/python3.14/site-packages/headroom
+```
+
+本次 patch 已直接应用到该安装包。
+这个修改会在后续 `pipx upgrade` 时被覆盖，升级后必须重新 patch 或安装维护好的 Headroom fork。
+
+中转站启动脚本为：
+
+```text
+/Volumes/Develop/git/szbl-hpc/Qbics/new/headroom.sh
+```
+
+当前脚本使用以下配置：
+
+```text
+HEADROOM_COMPRESSION_TIMEOUT_SECONDS=90
+HEADROOM_RETRY_MAX_ATTEMPTS=3
+HEADROOM_RETRY_BASE_DELAY_MS=1000
+HEADROOM_RETRY_MAX_DELAY_MS=30000
+HEADROOM_LOG_FILE=/Volumes/Develop/git/szbl-hpc/Qbics/new/.headroom/proxy.jsonl
+```
+
+`HEADROOM_RETRY_MAX_ATTEMPTS=3` 表示总尝试次数为 3 次，即初始请求加最多 2 次 retry。
+不要开启 `HEADROOM_LOG_MESSAGES`，避免把 prompt 或消息内容写入日志。
+
+修改 Headroom source、site-packages 或启动脚本后，都必须重启 Headroom relay。
+OpenCode GUI 不会热加载已经加载的 Headroom/fork provider；如果修改了 fork 的 source 或 bundle，
+还必须完全退出并重新启动 OpenCode GUI。
+
+### 为什么不在 fork 的 round 0 再加 retry
+
+fork 的普通 `round=0` 请求保持 `maxRetries=0`，交给 OpenCode 外层 `SessionRetry`。
+Headroom 负责 transport 和 upstream HTTP status 的有限重试。
+这样可以避免 fork、Headroom 和 OpenCode 三层 retry 相乘，持续过载时放大请求风暴。
+
+在当前配置下，一次 OpenCode 外层尝试最多经过 Headroom 的 3 次 upstream attempt。
+如果 OpenCode 自身继续重试，单个用户 turn 的总请求数仍可能较高，因此 retry 次数不应无上限增加。
+
+### 验证记录
+
+修复后执行过以下检查：
+
+```bash
+python3.14 -m py_compile \
+  /Users/galaxy/.local/pipx/venvs/headroom-ai/lib/python3.14/site-packages/headroom/proxy/helpers.py \
+  /Users/galaxy/.local/pipx/venvs/headroom-ai/lib/python3.14/site-packages/headroom/proxy/handlers/streaming.py
+
+PYTHONPATH=/Users/galaxy/.local/pipx/venvs/headroom-ai/lib/python3.14/site-packages \
+  /Users/galaxy/.local/pipx/venvs/headroom-ai/bin/python -m pytest -q \
+  --import-mode=importlib \
+  /var/folders/rv/8m9kmnws229_62m4d4bw16jc0000gn/T/opencode/headroom-upstream/tests/test_proxy_streaming_ratelimit_headers.py \
+  -k 'retryable_upstream_status'
+```
+
+定向 streaming status retry 测试结果为 `8 passed`，覆盖 `429`、`500`、`502`、`503`、`504`、
+`524` 和 `529`，并覆盖 retry exhaustion 保留错误响应的情况。
+
+当前 relay 健康检查结果：
+
+```text
+version=0.37.0
+pid=14973
+compression_timeout_seconds=90.0
+max_workers=4
+running=0
+leaked_threads_total=0
+quarantine_active=false
+```
+
+### 后续 patch 清单
+
+以后升级 Headroom 后按以下顺序处理：
+
+1. 记录新版本号和 `pipx` venv 路径。
+2. 在 `helpers.py` 重新添加 `RETRYABLE_STREAM_STATUSES`。
+3. 在 `streaming.py` 重新添加 import 和连接前 streaming status retry。
+4. 保留 `>= 400` 的非成功响应处理，不引入未经测试的 redirect 变化。
+5. 重新运行 `py_compile` 和定向 `pytest`，预期至少 `8 passed`。
+6. 重启 `/Volumes/Develop/git/szbl-hpc/Qbics/new/headroom.sh` 启动的 relay。
+7. 使用 `curl http://127.0.0.1:8787/health` 确认新版本、`compression_timeout_seconds` 和 executor 状态。
+8. 检查 `.headroom/proxy.jsonl` 中的 status、retry 和 latency metadata，但不要开启 message logging。
+9. 如果再次出现 `compression_refused`，先 compact 或 fork 新会话，不要重试相同的大 request body。
