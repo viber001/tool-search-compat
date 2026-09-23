@@ -69,6 +69,24 @@ local photonmarkModels = {
       "5",
     ),
 
+  "gpt-6-sol":
+    model(
+      "gpt-6-sol",
+      "0.2",
+      "0.02",
+      "0",
+      "1",
+    ),
+
+  "gpt-6-luna":
+    model(
+      "gpt-6-luna",
+      "0.01",
+      "0.001",
+      "0",
+      "0.05",
+    ),
+
   "gpt-5.6-sol":
     model(
       "gpt-5.6-sol",
