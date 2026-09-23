@@ -127,7 +127,7 @@ local tencentModel(
   context=1000000,
   outputLimit=384000,
   variants=tencentVariants(noReasoning),
-  vision=false,
+  modalities=null,
 ) = {
   name: name,
   reasoning: true,
@@ -145,10 +145,10 @@ local tencentModel(
   },
 
   variants: variants,
-} + if vision then {
+} + if modalities != null then {
   attachment: true,
   modalities: {
-    input: ["text", "image"],
+    input: modalities,
     output: ["text"],
   },
 } else {};
@@ -166,7 +166,7 @@ local tencentModels = {
       "4.00",
       "800.00",
       variants=tencentVariants(noReasoning),
-      vision=true,
+      modalities=["text", "image"],
     ),
 
   "deepseek/deepseek-v4-pro":
@@ -185,7 +185,7 @@ local tencentModels = {
       "4.00",
       "800.00",
       variants=tencentVariants(noReasoning),
-      vision=true,
+      modalities=["text", "image"],
     ),
 
   "glm-5.3":
@@ -206,7 +206,7 @@ local tencentModels = {
       "280.00",
       outputLimit=128000,
       variants=tencentVariants(noNone),
-      vision=true,
+      modalities=["text", "image", "video", "pdf"],
     ),
 
   "kimi-k3":
@@ -217,7 +217,7 @@ local tencentModels = {
       "10000.00",
       outputLimit=128000,
       variants=tencentVariants(noNone),
-      vision=true,
+      modalities=["text", "image", "video"],
     ),
 
   "kimi-k2.7-code":
@@ -229,7 +229,7 @@ local tencentModels = {
       context=262144,
       outputLimit=262144,
       variants=tencentVariants(noNone),
-      vision=true,
+      modalities=["text", "image", "video"],
     ),
 
   "kimi-k2.7-code-highspeed":
@@ -241,7 +241,7 @@ local tencentModels = {
       context=262144,
       outputLimit=262144,
       variants=tencentVariants(noNone),
-      vision=true,
+      modalities=["text", "image", "video"],
     ),
 
   "minimax-m3":
@@ -252,6 +252,7 @@ local tencentModels = {
       "840.00",
       outputLimit=65536,
       variants=tencentVariants(noReasoning),
+      modalities=["text", "image", "video"],
     ),
 
   "minimax-m2.7":
