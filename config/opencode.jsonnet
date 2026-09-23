@@ -217,7 +217,7 @@ local tencentModels = {
       "10000.00",
       outputLimit=128000,
       variants=tencentVariants(noNone),
-      modalities=["text", "image", "video"],
+      modalities=["text", "image"],
     ),
 
   "kimi-k2.7-code":
@@ -229,7 +229,7 @@ local tencentModels = {
       context=262144,
       outputLimit=262144,
       variants=tencentVariants(noNone),
-      modalities=["text", "image", "video"],
+      modalities=["text", "image"],
     ),
 
   "kimi-k2.7-code-highspeed":
@@ -241,7 +241,7 @@ local tencentModels = {
       context=262144,
       outputLimit=262144,
       variants=tencentVariants(noNone),
-      modalities=["text", "image", "video"],
+      modalities=["text", "image"],
     ),
 
   "minimax-m3":
