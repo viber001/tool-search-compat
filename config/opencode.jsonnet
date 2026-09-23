@@ -127,7 +127,7 @@ local tencentModel(
   context=1000000,
   outputLimit=384000,
   variants=tencentVariants(noReasoning),
-  modalities=null,
+  vision=false,
 ) = {
   name: name,
   reasoning: true,
@@ -145,7 +145,13 @@ local tencentModel(
   },
 
   variants: variants,
-} + if modalities != null then { modalities: modalities } else {};
+} + if vision then {
+  attachment: true,
+  modalities: {
+    input: ["text", "image"],
+    output: ["text"],
+  },
+} else {};
 
 // DeepSeek-V4-Pro 原厂直供三别名同指同一模型（0813 正式版原厂直供）：
 //   deepseek-v4-pro-202606      平台主档位 ID（2026-06 版）
@@ -160,6 +166,7 @@ local tencentModels = {
       "4.00",
       "800.00",
       variants=tencentVariants(noReasoning),
+      vision=true,
     ),
 
   "deepseek/deepseek-v4-pro":
@@ -178,7 +185,7 @@ local tencentModels = {
       "4.00",
       "800.00",
       variants=tencentVariants(noReasoning),
-      modalities={ input: ["text", "image"], output: ["text"] },
+      vision=true,
     ),
 
   "glm-5.3":
@@ -199,6 +206,7 @@ local tencentModels = {
       "280.00",
       outputLimit=128000,
       variants=tencentVariants(noNone),
+      vision=true,
     ),
 
   "kimi-k3":
@@ -209,6 +217,7 @@ local tencentModels = {
       "10000.00",
       outputLimit=128000,
       variants=tencentVariants(noNone),
+      vision=true,
     ),
 
   "kimi-k2.7-code":
@@ -220,6 +229,7 @@ local tencentModels = {
       context=262144,
       outputLimit=262144,
       variants=tencentVariants(noNone),
+      vision=true,
     ),
 
   "kimi-k2.7-code-highspeed":
@@ -231,6 +241,7 @@ local tencentModels = {
       context=262144,
       outputLimit=262144,
       variants=tencentVariants(noNone),
+      vision=true,
     ),
 
   "minimax-m3":
